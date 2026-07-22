@@ -207,3 +207,47 @@ def csv_pipe(
 
 def print_pipe(max_items: int | None = None) -> PrintPipeline:
     return PrintPipeline(max_items=max_items)
+
+
+class RequireKeys:
+    """Drop or fill items missing required keys (shared schema helper)."""
+
+    def __init__(
+        self,
+        *keys: str,
+        drop: bool = True,
+        defaults: dict[str, Any] | None = None,
+    ):
+        self.keys = keys
+        self.drop = drop
+        self.defaults = dict(defaults or {})
+        self.dropped = 0
+        self.filled = 0
+
+    async def process_item(
+        self, item: dict[str, Any], spider: Any
+    ) -> dict[str, Any] | None:
+        missing = [k for k in self.keys if k not in item or item.get(k) in (None, "")]
+        if not missing:
+            return item
+        if self.drop and not self.defaults:
+            self.dropped += 1
+            return None
+        out = dict(item)
+        for k in missing:
+            if k in self.defaults:
+                out[k] = self.defaults[k]
+                self.filled += 1
+            elif self.drop:
+                self.dropped += 1
+                return None
+        return out
+
+
+def require_keys(
+    *keys: str,
+    drop: bool = True,
+    defaults: dict[str, Any] | None = None,
+) -> RequireKeys:
+    """Pipeline: ensure item has keys (drop incomplete or fill defaults)."""
+    return RequireKeys(*keys, drop=drop, defaults=defaults)

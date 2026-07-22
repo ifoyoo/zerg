@@ -18,6 +18,31 @@ _JSON_LD_RE = re.compile(
     r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
     re.I | re.S,
 )
+_JSONP_RE = re.compile(
+    r"^\s*[\w$.]+\s*\(\s*(.*)\s*\)\s*;?\s*$",
+    re.S,
+)
+
+
+def strip_jsonp(text: str) -> Any:
+    """Parse JSON or JSONP (``cb({...})`` / ``cb([...])``) into Python objects."""
+    raw = (text or "").strip()
+    if not raw:
+        raise ValueError("empty jsonp body")
+    try:
+        return orjson.loads(raw.encode())
+    except orjson.JSONDecodeError:
+        pass
+    m = _JSONP_RE.match(raw)
+    if not m:
+        # looser: first ( ... last )
+        a, b = raw.find("("), raw.rfind(")")
+        if a < 0 or b <= a:
+            raise ValueError("not json/jsonp")
+        payload = raw[a + 1 : b].strip()
+    else:
+        payload = m.group(1).strip()
+    return orjson.loads(payload.encode())
 
 
 def _strip_ns(tag: str) -> str:

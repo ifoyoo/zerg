@@ -1,14 +1,35 @@
-"""zerg — small, sharp, and hungry."""
+"""zerg — small, sharp, and hungry.
+
+Core crawl framework only. Self-evolution lives in the local ``feed/`` package::
+
+    from feed.evo import EvoObserver, evolve
+"""
 
 from __future__ import annotations
 
-from zerg.engine import Engine, crawl, crawl_many
+from zerg.engine import (
+    KEEP_ALL,
+    KEEP_EXPERIENCE,
+    KEEP_ITEMS,
+    Engine,
+    RunObserver,
+    crawl,
+    crawl_many,
+)
+from zerg.jsl import (
+    clearance_from_step1_html,
+    clearance_from_step2_html,
+    process_jsl_html,
+    solve_go_clearance,
+)
+from zerg.store import cap_items, gc, usage
 from zerg.extract import (
     embedded_json,
     feed_items,
     json_ld,
     re_first,
     sitemap_urls,
+    strip_jsonp,
     table_rows,
 )
 from zerg.http import Fetch, Fetcher, ImpersonateFetch
@@ -30,11 +51,20 @@ from zerg.models import (
     ZergError,
 )
 from zerg.parser import Parser
-from zerg.pipeline import Pipeline, csv_pipe, jsonl, print_pipe
+from zerg.pipeline import Pipeline, csv_pipe, jsonl, print_pipe, require_keys
 from zerg.registry import discover, get
 from zerg.scheduler import Scheduler
 from zerg.spider import Spider
-from zerg.util import absolute_url, absolute_urls, paginate, parse_link_header
+from zerg.util import (
+    absolute_url,
+    absolute_urls,
+    detect_waf,
+    detect_waf_response,
+    form_body,
+    rate_limit_headers,
+    paginate,
+    parse_link_header,
+)
 
 core = (
     "Request",
@@ -55,14 +85,20 @@ __all__ = [
     "Pipeline",
     "csv_pipe",
     "print_pipe",
+    "require_keys",
     "MediaPipeline",
     "absolute_url",
     "absolute_urls",
     "paginate",
     "parse_link_header",
+    "detect_waf",
+    "detect_waf_response",
     "embedded_json",
     "feed_items",
     "json_ld",
+    "strip_jsonp",
+    "form_body",
+    "rate_limit_headers",
     "re_first",
     "sitemap_urls",
     "table_rows",
@@ -77,11 +113,22 @@ __all__ = [
     "REASON_YIELD",
     "REASON_ERRBACK",
     "Engine",
+    "RunObserver",
     "Fetcher",
     "Scheduler",
     "Stats",
     "Parser",
     "ImpersonateFetch",
+    "KEEP_EXPERIENCE",
+    "KEEP_ITEMS",
+    "KEEP_ALL",
+    "gc",
+    "usage",
+    "cap_items",
+    "solve_go_clearance",
+    "clearance_from_step1_html",
+    "clearance_from_step2_html",
+    "process_jsl_html",
     "core",
 ]
 

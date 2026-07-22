@@ -1,8 +1,12 @@
+# local products / feed fleet (not part of published core)
 data/
 spiders/
-tests/
+notes/
+feed/
 DESIGN.md
 REPORT.md
+
+# tooling
 *.egg-info/
 __pycache__/
 *.pyc

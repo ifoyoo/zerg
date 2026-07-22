@@ -6,7 +6,7 @@ import asyncio
 import time
 from collections.abc import AsyncIterator, Callable, Iterable, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from zerg.http import Fetch
 from zerg.log import zlog
@@ -86,8 +86,50 @@ def _build_fetcher(spider: Spider) -> Any:
     )
 
 
+# keep modes: what to retain after a crawl
+#   experience — no item products (jsonl/media); feed observers still run
+#   items      — run pipelines under data_dir
+#   all        — alias of items (reserved for future media dumps)
+KEEP_EXPERIENCE = "experience"
+KEEP_ITEMS = "items"
+KEEP_ALL = "all"
+
+
+@runtime_checkable
+class RunObserver(Protocol):
+    """Optional telemetry hook (feed/evo implements this; core does not)."""
+
+    def on_response(self, url: str, status: int) -> None: ...
+
+    def on_failure(
+        self, url: str, reason: str, status: int | None
+    ) -> None: ...
+
+    def on_item(self, item: dict[str, Any]) -> None: ...
+
+    def on_request_yield(self) -> None: ...
+
+    def on_finish(self, spider: Spider, stats: dict[str, Any]) -> None: ...
+
+
+def _call_observers(observers: Sequence[Any], method: str, *args: Any) -> None:
+    for obs in observers:
+        fn = getattr(obs, method, None)
+        if fn is None:
+            continue
+        try:
+            fn(*args)
+        except Exception as e:
+            name = type(obs).__name__
+            zlog("engine", "observer %s.%s failed: %s", name, method, e)
+
+
 class Engine:
-    """Run one spider to completion."""
+    """Run one spider to completion.
+
+    Core has **no** dependency on feed/evo. Pass ``observers`` (e.g. feed
+    ``EvoObserver``) for self-evolution telemetry.
+    """
 
     def __init__(
         self,
@@ -96,16 +138,31 @@ class Engine:
         pipelines: list[Any] | None = None,
         fetcher: Any | None = None,
         data_dir: str | Path | None = None,
+        keep: str = KEEP_ITEMS,
+        observers: Sequence[Any] | None = None,
+        on_finish: Callable[[Spider, dict[str, Any]], None] | None = None,
     ):
         self.spider = spider
-        self._pipeline = Pipeline(*(pipelines or []))
+        self._keep = (
+            keep if keep in {KEEP_EXPERIENCE, KEEP_ITEMS, KEEP_ALL} else KEEP_ITEMS
+        )
+        # experience mode: never write item products even if pipelines were passed
+        if self._keep == KEEP_EXPERIENCE:
+            self._pipeline = Pipeline()
+        else:
+            self._pipeline = Pipeline(*(pipelines or []))
         self._fetcher = fetcher
         self._data_dir = Path(data_dir) if data_dir else None
+        self._observers = list(observers or [])
+        self._on_finish = on_finish
 
     async def run(self) -> dict[str, Any]:
         spider = self.spider
-        spider.data_dir = self._data_dir or Path("data") / spider.name
-        spider.data_dir.mkdir(parents=True, exist_ok=True)
+        if self._keep == KEEP_EXPERIENCE:
+            spider.data_dir = self._data_dir or Path("data") / "_scratch" / spider.name
+        else:
+            spider.data_dir = self._data_dir or Path("data") / spider.name
+            spider.data_dir.mkdir(parents=True, exist_ok=True)
 
         own_fetcher = self._fetcher is None
         fetcher = self._fetcher or _build_fetcher(spider)
@@ -122,6 +179,8 @@ class Engine:
             allowed_domains=spider.allowed_domains,
             max_depth=spider.max_depth,
         )
+        observers = self._observers
+        _call_observers(observers, "on_start", spider)
 
         pending = 0
         condition = asyncio.Condition()
@@ -136,8 +195,13 @@ class Engine:
         async def handle_yields(raw: Any, *, source: str) -> None:
             async for result in _iterate_results(raw):
                 if isinstance(result, Request):
+                    _call_observers(observers, "on_request_yield")
                     await enqueue(result)
                 elif isinstance(result, dict):
+                    _call_observers(observers, "on_item", result)
+                    if self._keep == KEEP_EXPERIENCE:
+                        stats.items += 1
+                        continue
                     out = await self._pipeline.process(result, spider)
                     if out is not None:
                         stats.items += 1
@@ -154,6 +218,13 @@ class Engine:
         async def dispatch_failure(failure: Failure) -> None:
             stats.errors += 1
             stats.bump(failure.reason)
+            _call_observers(
+                observers,
+                "on_failure",
+                failure.url,
+                failure.reason,
+                failure.status,
+            )
             fn = _resolve_callback(spider, failure.request.errback)
             if fn is None:
                 fn = getattr(spider, "errback", None)
@@ -185,16 +256,26 @@ class Engine:
                             Failure(request=req, reason=REASON_DOWNLOAD)
                         )
                         continue
+                    _call_observers(
+                        observers, "on_response", resp.url, resp.status
+                    )
                     if resp.status >= 400:
-                        await dispatch_failure(
-                            Failure(
-                                request=req,
-                                reason=REASON_HTTP,
-                                status=resp.status,
-                                response=resp,
-                            )
+                        challenge_set = set(
+                            getattr(spider, "challenge_statuses", None) or []
                         )
-                        continue
+                        if resp.status in challenge_set:
+                            stats.challenges += 1
+                            stats.bump("challenge")
+                        else:
+                            await dispatch_failure(
+                                Failure(
+                                    request=req,
+                                    reason=REASON_HTTP,
+                                    status=resp.status,
+                                    response=resp,
+                                )
+                            )
+                            continue
 
                     callback = _resolve_callback(spider, req.callback)
                     if callback is None:
@@ -253,7 +334,28 @@ class Engine:
 
         stats.filtered = scheduler.filtered
         stats.duration_s = round(time.perf_counter() - t0, 3)
-        return stats.as_dict()
+        out = stats.as_dict()
+        out["keep"] = self._keep
+        req_n = int(out.get("requests") or 0)
+        err_n = int(out.get("errors") or 0)
+        err_rate = (err_n / req_n) if req_n else 0.0
+        out["error_rate"] = round(err_rate, 4)
+        threshold = getattr(spider, "health_error_rate", 0.5)
+        if threshold is None:
+            out["healthy"] = True
+        else:
+            out["healthy"] = err_rate <= float(threshold) and (
+                int(out.get("items") or 0) > 0
+                or int(out.get("challenges") or 0) > 0
+                or req_n == 0
+            )
+        _call_observers(observers, "on_finish", spider, out)
+        if self._on_finish is not None:
+            try:
+                self._on_finish(spider, out)
+            except Exception as e:
+                zlog(spider.name, "on_finish failed: %s", e)
+        return out
 
 
 async def crawl(
@@ -262,8 +364,19 @@ async def crawl(
     pipelines: list[Any] | None = None,
     fetcher: Any | None = None,
     data_dir: str | Path | None = None,
+    keep: str = KEEP_ITEMS,
+    observers: Sequence[Any] | None = None,
+    on_finish: Callable[[Spider, dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
-    """Run a spider and return stats."""
+    """Run a spider and return stats.
+
+    ``keep``:
+      - ``"experience"``: count items but skip product pipelines (jsonl/media).
+      - ``"items"`` / ``"all"``: run pipelines and write under data_dir.
+
+    Telemetry / self-evolution is **not** built into core — pass
+    ``observers=[EvoObserver(...)]`` from the feed layer.
+    """
     if isinstance(spider, type):
         spider = spider()
     engine = Engine(
@@ -271,6 +384,9 @@ async def crawl(
         pipelines=pipelines,
         fetcher=fetcher,
         data_dir=data_dir,
+        keep=keep,
+        observers=observers,
+        on_finish=on_finish,
     )
     return await engine.run()
 
@@ -282,8 +398,16 @@ async def crawl_many(
     pipelines: list[Any] | None = None,
     data_dir: str | Path | None = None,
     max_spiders: int = 3,
+    keep: str = KEEP_EXPERIENCE,
+    observers_factory: Any | None = None,
+    observers: Sequence[Any] | None = None,
+    on_batch_finish: Callable[[dict[str, dict[str, Any]]], None] | None = None,
 ) -> dict[str, dict[str, Any]]:
-    """Run spiders with bounded parallelism. Failures stay isolated."""
+    """Run spiders with bounded parallelism. Failures stay isolated.
+
+    Core does not call evolve. Feed runners pass ``observers_factory`` /
+    ``on_batch_finish`` for evo.
+    """
     sem = asyncio.Semaphore(max(1, max_spiders))
     results: dict[str, dict[str, Any]] = {}
 
@@ -298,8 +422,20 @@ async def crawl_many(
                     pipes = list(pipelines)
                 else:
                     pipes = []
+                if observers_factory is not None:
+                    obs = list(observers_factory())
+                elif observers is not None:
+                    obs = list(observers)
+                else:
+                    obs = []
                 dd = Path(data_dir) / name if data_dir else None
-                st = await crawl(spider, pipelines=pipes, data_dir=dd)
+                st = await crawl(
+                    spider,
+                    pipelines=pipes,
+                    data_dir=dd,
+                    keep=keep,
+                    observers=obs,
+                )
                 results[name] = st
                 reasons = st.get("by_reason") or {}
                 reason_s = f" reasons={reasons}" if reasons else ""
@@ -315,4 +451,9 @@ async def crawl_many(
                 print(f"[异虫] ✗ {name}: {e}")
 
     await asyncio.gather(*[_one(s) for s in spiders])
+    if on_batch_finish is not None:
+        try:
+            on_batch_finish(results)
+        except Exception as e:
+            print(f"[异虫] on_batch_finish failed: {e}")
     return results

@@ -32,18 +32,35 @@ Callback = str | Callable[..., Any]
 
 
 def _detect_encoding(content: bytes, header_encoding: str | None) -> str:
-    """Detect charset from header, HTML meta, or utf-8."""
+    """Detect charset from header / HTML meta, verified by actually decoding.
+
+    Chinese JSONP (e.g. 163 ``cm_guonei.js``) often ships GBK while clients
+    claim utf-8 — prefer a candidate that decodes cleanly.
+    """
+    candidates: list[str] = []
     if header_encoding:
         enc = header_encoding.strip().lower()
         if enc and enc not in {"iso-8859-1", "latin-1", "latin1"}:
-            return enc
+            candidates.append(enc)
     head = content[:4096]
     m = _META_CHARSET_RE.search(head) or _META_CONTENT_TYPE_RE.search(head)
     if m:
-        return m.group(1).decode("ascii", errors="ignore").lower() or "utf-8"
-    if header_encoding:
-        return header_encoding
-    return "utf-8"
+        meta = m.group(1).decode("ascii", errors="ignore").lower()
+        if meta and meta not in candidates:
+            candidates.append(meta)
+    for enc in ("utf-8", "gb18030", "gbk"):
+        if enc not in candidates:
+            candidates.append(enc)
+    sample = content[:8192] if content else b""
+    if not sample:
+        return candidates[0] if candidates else "utf-8"
+    for enc in candidates:
+        try:
+            sample.decode(enc)
+            return enc
+        except (LookupError, UnicodeDecodeError):
+            continue
+    return candidates[0] if candidates else "utf-8"
 
 
 @dataclass(slots=True)
@@ -264,6 +281,7 @@ class Stats:
     items: int = 0
     errors: int = 0
     filtered: int = 0
+    challenges: int = 0  # status in spider.challenge_statuses, callback path
     data_dir: str = ""
     duration_s: float = 0.0
     by_reason: dict[str, int] = field(default_factory=dict)

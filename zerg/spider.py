@@ -28,6 +28,10 @@ class Spider:
     max_depth: int | None = None
     use_impersonate: bool = False
     impersonate: str | None = None
+    # HTTP statuses that still invoke callback (not errback), e.g. jsl 521
+    challenge_statuses: list[int] = []
+    # error_rate above this → stats["healthy"]=False (None disables check)
+    health_error_rate: float | None = 0.5
     tags: ClassVar[list[str]] = []
 
     data_dir: Path  # set by Engine
@@ -36,6 +40,7 @@ class Spider:
         self.start_urls = list(type(self).start_urls)
         self.headers = dict(type(self).headers)
         self.allowed_domains = list(type(self).allowed_domains)
+        self.challenge_statuses = list(type(self).challenge_statuses)
 
     def prepare_request(self, request: Request) -> Request:
         """Merge spider headers onto the request."""

@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
-"""Run local spiders from package ``spiders/``.
+"""Optional multi-spider runner for a local ``spiders/`` package.
+
+Core package is ``zerg`` only. Put site spiders next to this script if you
+want a fleet; ``spiders/`` is gitignored by default.
 
 Usage:
     uv run python run.py --list
@@ -80,15 +83,15 @@ def main() -> int:
     def pipes():
         return [jsonl(mode="w")]
 
-    async def _run():
-        return await crawl_many(
+    results = asyncio.run(
+        crawl_many(
             selected,
             pipelines_factory=pipes,
             data_dir=DATA,
             max_spiders=args.max_spiders,
+            keep="items",
         )
-
-    results = asyncio.run(_run())
+    )
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(results, indent=2, ensure_ascii=False))
@@ -104,19 +107,6 @@ def main() -> int:
         f"\n=== summary: spiders_ok={ok}/{len(results)} "
         f"items={total_items} errors={total_err} → {args.report}"
     )
-
-    fails = [
-        (n, s)
-        for n, s in sorted(results.items())
-        if s.get("items", 0) == 0 or s.get("exception") or s.get("errors", 0) > 0
-    ]
-    if fails:
-        print("\nAttention (0 items / errors / exceptions):")
-        for n, s in fails:
-            print(
-                f"  {n}: items={s.get('items')} err={s.get('errors')} "
-                f"exc={s.get('exception', '')}"
-            )
     return 0
 
 
