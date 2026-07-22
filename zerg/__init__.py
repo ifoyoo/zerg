@@ -1,21 +1,8 @@
-"""zerg — small, sharp, and hungry.
-
-Core crawl framework only. Self-evolution lives in the local ``feed/`` package::
-
-    from feed.evo import EvoObserver, evolve
-"""
+"""zerg — a small, high-performance async crawling framework."""
 
 from __future__ import annotations
 
-from zerg.engine import (
-    KEEP_ALL,
-    KEEP_EXPERIENCE,
-    KEEP_ITEMS,
-    Engine,
-    RunObserver,
-    crawl,
-    crawl_many,
-)
+from zerg.engine import CrawlObserver, Engine, crawl, crawl_many
 from zerg.jsl import (
     clearance_from_step1_html,
     clearance_from_step2_html,
@@ -113,15 +100,12 @@ __all__ = [
     "REASON_YIELD",
     "REASON_ERRBACK",
     "Engine",
-    "RunObserver",
+    "CrawlObserver",
     "Fetcher",
     "Scheduler",
     "Stats",
     "Parser",
     "ImpersonateFetch",
-    "KEEP_EXPERIENCE",
-    "KEEP_ITEMS",
-    "KEEP_ALL",
     "gc",
     "usage",
     "cap_items",

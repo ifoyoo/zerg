@@ -89,12 +89,19 @@ def main() -> int:
             pipelines_factory=pipes,
             data_dir=DATA,
             max_spiders=args.max_spiders,
-            keep="items",
         )
     )
 
     args.report.parent.mkdir(parents=True, exist_ok=True)
     args.report.write_text(json.dumps(results, indent=2, ensure_ascii=False))
+
+    for name, stats in results.items():
+        marker = "x" if stats.get("exception") else "+"
+        print(
+            f"[{marker}] {name}: items={stats.get('items', 0)} "
+            f"req={stats.get('requests', 0)} err={stats.get('errors', 0)} "
+            f"({stats.get('duration_s', 0)}s)"
+        )
 
     ok = sum(
         1

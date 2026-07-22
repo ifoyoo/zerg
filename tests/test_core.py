@@ -13,6 +13,7 @@ from zerg import (
     Response,
     Spider,
     crawl,
+    crawl_many,
     jsonl,
 )
 from zerg.models import REASON_HTTP, REASON_YIELD
@@ -349,6 +350,76 @@ async def test_require_keys_pipeline(tmp_path: Path):
     )
     assert stats["items"] == 2
     assert rk.dropped == 1
+
+
+@pytest.mark.asyncio
+async def test_observer_receives_domain_objects(tmp_path: Path):
+    fake = _FakeFetch({"https://ex.com/": (200, b"<html></html>")})
+    events: list[tuple[str, object]] = []
+
+    class Observer:
+        def on_start(self, spider):
+            events.append(("start", spider))
+
+        def on_response(self, response):
+            events.append(("response", response))
+
+        def on_item(self, item):
+            events.append(("item", item))
+
+        def on_finish(self, spider, stats):
+            events.append(("finish", stats))
+
+    class S(Spider):
+        name = "observed"
+        start_urls = ["https://ex.com/"]
+
+        async def parse(self, response):
+            yield {"url": response.url}
+
+    stats = await crawl(S, fetcher=fake, data_dir=tmp_path, observers=[Observer()])
+    assert stats["items"] == 1
+    assert [name for name, _ in events] == ["start", "response", "item", "finish"]
+    assert isinstance(events[1][1], Response)
+
+
+@pytest.mark.asyncio
+async def test_crawl_many_isolates_failures_and_builds_observers(tmp_path: Path):
+    observed: list[str] = []
+
+    class Good(Spider):
+        name = "good"
+        start_urls = ["https://ex.com/"]
+
+        async def parse(self, response):
+            yield {"ok": True}
+
+    class Broken(Spider):
+        name = "broken"
+
+        async def start(self):
+            raise RuntimeError("boom")
+            yield  # pragma: no cover
+
+    class Observer:
+        def __init__(self, name: str):
+            self.name = name
+
+        def on_start(self, spider):
+            observed.append(self.name)
+
+    fake = _FakeFetch({"https://ex.com/": (200, b"<html></html>")})
+    results = await crawl_many(
+        [Good, Broken],
+        fetcher_factory=lambda spider: fake,
+        data_dir=tmp_path,
+        observers_factory=lambda spider: [Observer(spider.name)],
+        max_spiders=2,
+    )
+
+    assert results["good"]["items"] == 1
+    assert "exception" in results["broken"]
+    assert set(observed) == {"good", "broken"}
 
 
 def test_detect_encoding_gbk_over_wrong_header():

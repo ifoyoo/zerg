@@ -67,3 +67,11 @@ class Scheduler:
 
     async def pop(self) -> Request:
         return await self._queue.get()
+
+    def task_done(self) -> None:
+        """Mark the current request complete for ``join()`` coordination."""
+        self._queue.task_done()
+
+    async def join(self) -> None:
+        """Wait until every accepted request has completed."""
+        await self._queue.join()
