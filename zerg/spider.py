@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from pathlib import Path
-from typing import Any, AsyncIterator, ClassVar
+from typing import Any, ClassVar
 
 from zerg.log import zlog
 from zerg.models import Failure, Request, Response
@@ -19,11 +20,15 @@ class Spider:
     name: str = "spider"
     start_urls: list[str] = []
     concurrency: int = 10
-    delay: float = 0.0
+    delay: float = 0.0  # legacy alias: 1 / delay requests per second
+    requests_per_second: float | None = None
+    burst: int = 1
+    max_pending_requests: int = 1000
     headers: dict[str, str] = {}
     proxy: str | None = None
     timeout: float = 30.0
     max_retries: int = 3
+    max_response_bytes: int | None = 10 * 1024 * 1024
     allowed_domains: list[str] = []
     max_depth: int | None = None
     use_impersonate: bool = False
@@ -57,9 +62,7 @@ class Spider:
         self, response: Response
     ) -> AsyncIterator[Request | dict[str, Any]]:
         """Default callback."""
-        raise NotImplementedError(
-            f"{type(self).__name__}.parse() not implemented"
-        )
+        raise NotImplementedError(f"{type(self).__name__}.parse() not implemented")
 
     async def errback(
         self, failure: Failure

@@ -1,12 +1,16 @@
-"""Optional media download pipeline (byte-budgeted)."""
+"""Optional media download pipeline with streaming byte budgets."""
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import os
+import uuid
 from pathlib import Path
 from typing import Any
 
 from zerg.http import Fetch
+from zerg.models import DownloadError, Request
 from zerg.store import (
     DEFAULT_MAX_MEDIA_FILE_BYTES,
     DEFAULT_MAX_MEDIA_TOTAL_BYTES,
@@ -42,14 +46,7 @@ def normalize_media_url(url: str) -> str:
 
 
 class MediaPipeline:
-    """Download URLs from item fields into ``data/<spider>/images/``.
-
-    Resource guards (defaults are conservative):
-    - ``max_files`` per item
-    - ``max_file_bytes`` skip/truncate oversized bodies
-    - ``max_total_bytes`` stop downloading once spider media tree is full
-    - ``urls_only=True`` never hits disk — only keeps remote URLs on the item
-    """
+    """Stream item media into ``data/<spider>/images/`` with hard budgets."""
 
     def __init__(
         self,
@@ -78,7 +75,9 @@ class MediaPipeline:
         self._own_fetch = False
         self._root: Path | None = None
         self._sem: asyncio.Semaphore | None = None
+        self._budget_lock: asyncio.Lock | None = None
         self._written = 0
+        self._reserved = 0
         self._skipped_budget = 0
 
     async def open(self, spider: Any) -> None:
@@ -88,13 +87,13 @@ class MediaPipeline:
             self._root.mkdir(parents=True, exist_ok=True)
             self._written = dir_size(self._root)
         self._sem = asyncio.Semaphore(max(1, self.concurrency))
+        self._budget_lock = asyncio.Lock()
+        self._reserved = 0
 
         if self.urls_only:
             return
-
         if self._external is not None:
             self._fetch = self._external
-            self._own_fetch = False
             return
 
         headers = dict(getattr(spider, "headers", {}) or {})
@@ -104,100 +103,182 @@ class MediaPipeline:
             timeout=self.timeout,
             headers=headers,
             proxy=proxy,
+            max_response_bytes=self.max_file_bytes,
         )
         await self._fetch.__aenter__()
         self._own_fetch = True
 
     def _over_budget(self) -> bool:
-        if self.max_total_bytes is None:
+        return (
+            self.max_total_bytes is not None
+            and self._written + self._reserved >= self.max_total_bytes
+        )
+
+    async def _reserve(self, amount: int) -> bool:
+        assert self._budget_lock is not None
+        async with self._budget_lock:
+            if self.max_total_bytes is not None and (
+                self._written + self._reserved + amount > self.max_total_bytes
+            ):
+                self._skipped_budget += 1
+                return False
+            self._reserved += amount
+            return True
+
+    async def _release(self, amount: int, *, commit: bool = False) -> None:
+        assert self._budget_lock is not None
+        async with self._budget_lock:
+            self._reserved = max(0, self._reserved - amount)
+            if commit:
+                self._written += amount
+
+    async def _commit_file(self, temp: Path, path: Path, amount: int) -> None:
+        await asyncio.to_thread(os.replace, temp, path)
+        await self._release(amount, commit=True)
+
+    async def _write_and_commit(self, temp: Path, path: Path, body: bytes) -> None:
+        await asyncio.to_thread(temp.write_bytes, body)
+        await self._commit_file(temp, path, len(body))
+
+    async def _shield_transaction(self, transaction: Any) -> None:
+        task = asyncio.create_task(transaction)
+        try:
+            await asyncio.shield(task)
+        except asyncio.CancelledError:
+            await task
+            raise
+
+    async def _stream_to_file(self, url: str, request: Request, path: Path) -> bool:
+        assert self._fetch is not None
+        temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.part")
+        received = 0
+        committed = False
+        try:
+            async with self._fetch.stream(request) as response:
+                if response.status >= 400:
+                    return False
+                declared_raw = response.header("content-length")
+                try:
+                    declared = int(declared_raw) if declared_raw else None
+                except ValueError:
+                    declared = None
+                if (
+                    self.max_file_bytes is not None
+                    and declared is not None
+                    and declared > self.max_file_bytes
+                ):
+                    return False
+                path = path.with_suffix(sniff_ext(url, response.header("content-type")))
+                temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.part")
+                with temp.open("wb") as output:
+                    async for chunk in response.chunks:
+                        if self.max_file_bytes is not None and (
+                            received + len(chunk) > self.max_file_bytes
+                        ):
+                            return False
+                        if not await self._reserve(len(chunk)):
+                            return False
+                        received += len(chunk)
+                        output.write(chunk)
+            await self._shield_transaction(self._commit_file(temp, path, received))
+            committed = True
+            return True
+        except asyncio.CancelledError:
+            # The shielded commit completed before cancellation was re-raised.
+            committed = True
+            raise
+        except (DownloadError, OSError):
             return False
-        return self._written >= self.max_total_bytes
+        finally:
+            if temp.exists():
+                temp.unlink(missing_ok=True)
+            if received and not committed:
+                await self._release(received)
 
-    async def process_item(
-        self, item: dict[str, Any], spider: Any
-    ) -> dict[str, Any]:
+    async def _buffered_to_file(self, url: str, request: Request, path: Path) -> bool:
+        assert self._fetch is not None
+        try:
+            response = await self._fetch.fetch(request)
+        except DownloadError:
+            return False
+        if response is None or response.status >= 400:
+            return False
+        body = response.content
+        if self.max_file_bytes is not None and len(body) > self.max_file_bytes:
+            return False
+        if not await self._reserve(len(body)):
+            return False
+        path = path.with_suffix(sniff_ext(url, response.header("content-type")))
+        temp = path.with_name(f".{path.name}.{uuid.uuid4().hex}.part")
+        try:
+            await self._shield_transaction(self._write_and_commit(temp, path, body))
+            return True
+        except OSError:
+            await self._release(len(body))
+            return False
+        finally:
+            temp.unlink(missing_ok=True)
+
+    async def process_item(self, item: dict[str, Any], spider: Any) -> dict[str, Any]:
         urls = item.get(self.field) or []
-        if not urls:
-            return item
-
+        if isinstance(urls, str):
+            urls = [urls]
         if self.max_files is not None:
             urls = list(urls)[: self.max_files]
 
-        # URLs only — zero disk, zero extra HTTP
+        valid_urls = [
+            normalize_media_url(url) for url in urls if isinstance(url, str) and url
+        ]
+        if not valid_urls:
+            return item
         if self.urls_only:
-            item = dict(item)
-            item["files"] = []
-            item["files_count"] = 0
-            item["image_urls"] = [
-                normalize_media_url(u) for u in urls if isinstance(u, str) and u
-            ]
-            return item
-
-        if self._fetch is None or self._root is None:
-            return item
-
-        if self._over_budget():
+            return {
+                **item,
+                "files": [],
+                "files_count": 0,
+                "image_urls": valid_urls,
+            }
+        if self._fetch is None or self._root is None or self._over_budget():
             self._skipped_budget += 1
-            item = dict(item)
-            item["files"] = []
-            item["files_count"] = 0
-            item["media_skipped"] = "budget"
-            return item
+            return {
+                **item,
+                "files": [],
+                "files_count": 0,
+                "media_skipped": "budget",
+            }
 
         name = _slug(str(item.get(self.name_field, "item")))
         folder = self._root / name
         folder.mkdir(parents=True, exist_ok=True)
         assert self._sem is not None
 
-        async def _one(i: int, url: str) -> str | None:
-            if not isinstance(url, str) or not url:
+        async def download(index: int, url: str) -> str | None:
+            digest = hashlib.sha1(url.encode()).hexdigest()[:8]
+            unique = uuid.uuid4().hex[:6]
+            stem = f"{index:03d}-{digest}-{unique}"
+            base_path = folder / f"{stem}.bin"
+            request = Request(url)
+            async with self._sem:
+                if callable(getattr(self._fetch, "stream", None)):
+                    saved = await self._stream_to_file(url, request, base_path)
+                else:
+                    saved = await self._buffered_to_file(url, request, base_path)
+            if not saved:
                 return None
-            if self._over_budget():
-                return None
-            url = normalize_media_url(url)
-            async with self._sem:  # type: ignore[union-attr]
-                resp = await self._fetch.get(url)  # type: ignore[union-attr]
-            if resp is None or resp.status >= 400:
-                print(f"  [media] ✗ {name} [{i}]")
-                return None
-            body = resp.content
-            if (
-                self.max_file_bytes is not None
-                and len(body) > self.max_file_bytes
-            ):
-                print(
-                    f"  [media] skip large {name} [{i}] "
-                    f"{human_bytes(len(body))} > "
-                    f"{human_bytes(self.max_file_bytes)}"
-                )
-                return None
-            if self.max_total_bytes is not None and (
-                self._written + len(body) > self.max_total_bytes
-            ):
-                self._skipped_budget += 1
-                return None
-            ext = sniff_ext(url, resp.header("content-type"))
-            path = folder / f"{i:03d}{ext}"
-            await asyncio.to_thread(path.write_bytes, body)
-            self._written += len(body)
-            return str(path)
+            matches = list(folder.glob(f"{stem}.*"))
+            return str(matches[0]) if matches else None
 
         results = await asyncio.gather(
-            *[_one(i, u) for i, u in enumerate(urls, 1)],
-            return_exceptions=True,
+            *(download(i, url) for i, url in enumerate(valid_urls, 1))
         )
-        saved = [r for r in results if isinstance(r, str)]
-
-        item = dict(item)
-        item["files"] = saved
-        item["files_count"] = len(saved)
-        return item
+        saved = [result for result in results if isinstance(result, str)]
+        return {**item, "files": saved, "files_count": len(saved)}
 
     async def close(self, spider: Any) -> None:
         if self._skipped_budget:
             print(
                 f"  [media] budget stop: wrote {human_bytes(self._written)} "
-                f"skipped_items≈{self._skipped_budget}"
+                f"skipped_items~{self._skipped_budget}"
             )
         if self._own_fetch and self._fetch is not None:
             await self._fetch.__aexit__(None, None, None)
@@ -215,13 +296,15 @@ def media(
     max_total_bytes: int | None = DEFAULT_MAX_MEDIA_TOTAL_BYTES,
     urls_only: bool = False,
     fetcher: Any | None = None,
+    *,
+    timeout: float = 60.0,
 ) -> MediaPipeline:
-    """Build a MediaPipeline. Prefer ``urls_only=True`` when disk is tight."""
     return MediaPipeline(
         field=field,
         subdir=subdir,
         name_field=name_field,
         concurrency=concurrency,
+        timeout=timeout,
         max_files=max_files,
         max_file_bytes=max_file_bytes,
         max_total_bytes=max_total_bytes,

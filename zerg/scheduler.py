@@ -28,12 +28,15 @@ class Scheduler:
         *,
         allowed_domains: list[str] | None = None,
         max_depth: int | None = None,
+        max_pending: int = 0,
     ) -> None:
-        self._queue: asyncio.Queue[Request] = asyncio.Queue()
+        self._queue: asyncio.Queue[Request] = asyncio.Queue(maxsize=max(0, max_pending))
         self._seen: set[str] = set()
         self._allowed_domains = list(allowed_domains or [])
         self._max_depth = max_depth
         self.filtered: int = 0
+        self.rejected: int = 0
+        self.queue_peak: int = 0
 
     def __len__(self) -> int:
         return self._queue.qsize()
@@ -42,27 +45,62 @@ class Scheduler:
     def seen_count(self) -> int:
         return len(self._seen)
 
-    def push(self, request: Request) -> bool:
-        """Enqueue request. False if filtered."""
+    def _admit(self, request: Request) -> str | None:
         depth = int(request.meta.get("depth", 0))
         if self._max_depth is not None and depth > self._max_depth:
             self.filtered += 1
-            return False
+            return None
 
         if self._allowed_domains:
             host = urlsplit(request.url).hostname or ""
             if not _host_allowed(host, self._allowed_domains):
                 self.filtered += 1
-                return False
+                return None
 
-        if not request.dont_filter:
-            fp = request.fingerprint()
-            if fp in self._seen:
-                self.filtered += 1
-                return False
-            self._seen.add(fp)
+        if request.dont_filter:
+            return ""
+        fingerprint = request.fingerprint()
+        if fingerprint in self._seen:
+            self.filtered += 1
+            return None
+        self._seen.add(fingerprint)
+        return fingerprint
 
-        self._queue.put_nowait(request)
+    def _rollback(self, fingerprint: str | None) -> None:
+        if fingerprint:
+            self._seen.discard(fingerprint)
+
+    def _note_peak(self) -> None:
+        self.queue_peak = max(self.queue_peak, self._queue.qsize())
+
+    def push(self, request: Request) -> bool:
+        """Enqueue immediately; reject safely when the frontier is full."""
+        fingerprint = self._admit(request)
+        if fingerprint is None:
+            return False
+        try:
+            self._queue.put_nowait(request)
+        except asyncio.QueueFull:
+            self._rollback(fingerprint)
+            self.rejected += 1
+            return False
+        except BaseException:
+            self._rollback(fingerprint)
+            raise
+        self._note_peak()
+        return True
+
+    async def enqueue(self, request: Request) -> bool:
+        """Enqueue with backpressure while preserving dedup atomicity."""
+        fingerprint = self._admit(request)
+        if fingerprint is None:
+            return False
+        try:
+            await self._queue.put(request)
+        except BaseException:
+            self._rollback(fingerprint)
+            raise
+        self._note_peak()
         return True
 
     async def pop(self) -> Request:

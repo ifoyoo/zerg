@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
@@ -20,7 +19,6 @@ from zerg.models import REASON_HTTP, REASON_YIELD
 from zerg.parser import Parser
 from zerg.scheduler import Scheduler
 from zerg.util import absolute_url, paginate, parse_link_header, slug
-
 
 # ── Models ──────────────────────────────────────────────────────────
 
@@ -183,9 +181,7 @@ async def test_engine_crawl_items_and_follow(tmp_path: Path):
             yield {"title": response.css("h1"), "url": response.url}
 
     out = tmp_path / "items.jsonl"
-    stats = await crawl(
-        S, pipelines=[jsonl(out)], fetcher=fake, data_dir=tmp_path
-    )
+    stats = await crawl(S, pipelines=[jsonl(out)], fetcher=fake, data_dir=tmp_path)
     assert stats["items"] == 1
     assert stats["requests"] == 2
     assert stats["errors"] == 0
@@ -214,7 +210,6 @@ async def test_engine_http_error_errback(tmp_path: Path):
         pipelines=[jsonl(tmp_path / "i.jsonl")],
         fetcher=fake,
         data_dir=tmp_path,
-        
     )
     assert stats["items"] == 1
     assert stats["errors"] == 1
@@ -278,12 +273,6 @@ async def test_challenge_statuses_and_healthy(tmp_path: Path):
             return None
 
         async def fetch(self, request: Request) -> Response | None:
-            body = (
-                b"<script>document.cookie=('a')+('=')+('b');location.href=1</script>"
-                if "step1" in request.url or request.url.endswith("/")
-                else b"<html><title>ok</title></html>"
-            )
-            status = 521 if "challenge" in request.url or request.url.endswith("/") else 200
             # simplify: always 521 with jsl-ish body for seed
             return Response.from_http(
                 request=request,
@@ -345,9 +334,7 @@ async def test_require_keys_pipeline(tmp_path: Path):
             yield {"title": "c", "url": "u2"}
 
     rk = require_keys("title", "url")
-    stats = await crawl(
-        S, pipelines=[rk], fetcher=_Fake(), data_dir=tmp_path
-    )
+    stats = await crawl(S, pipelines=[rk], fetcher=_Fake(), data_dir=tmp_path)
     assert stats["items"] == 2
     assert rk.dropped == 1
 
@@ -423,7 +410,7 @@ async def test_crawl_many_isolates_failures_and_builds_observers(tmp_path: Path)
 
 
 def test_detect_encoding_gbk_over_wrong_header():
-    from zerg.models import Response, Request, _detect_encoding
+    from zerg.models import Request, Response, _detect_encoding
 
     # classic GBK bytes for "你好"
     raw = "你好spider".encode("gbk")

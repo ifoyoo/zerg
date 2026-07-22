@@ -6,7 +6,7 @@ import hashlib
 import re
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
-from typing import Any, NotRequired, TYPE_CHECKING, TypedDict
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 from urllib.parse import urldefrag, urlencode, urljoin, urlsplit, urlunsplit
 
 if TYPE_CHECKING:
@@ -108,6 +108,9 @@ class Response:
     content: bytes
     request: Request
     encoding: str = "utf-8"
+    attempts: int = 1
+    retries: int = 0
+    bytes_received: int = 0
     _text: str | None = field(default=None, repr=False, compare=False)
     _parser: Parser | None = field(default=None, repr=False, compare=False)
 
@@ -120,6 +123,8 @@ class Response:
         headers: dict[str, str],
         content: bytes,
         header_encoding: str | None = None,
+        *,
+        attempts: int = 1,
     ) -> Response:
         encoding = _detect_encoding(content, header_encoding)
         return cls(
@@ -129,6 +134,9 @@ class Response:
             content=content,
             request=request,
             encoding=encoding,
+            attempts=attempts,
+            retries=max(0, attempts - 1),
+            bytes_received=len(content),
         )
 
     @property
@@ -282,9 +290,15 @@ class Stats:
     errors: int = 0
     filtered: int = 0
     challenges: int = 0  # status in spider.challenge_statuses, callback path
+    retries: int = 0
+    timeouts: int = 0
+    downloaded_bytes: int = 0
+    queue_peak: int = 0
+    queue_rejected: int = 0
     data_dir: str = ""
     duration_s: float = 0.0
     by_reason: dict[str, int] = field(default_factory=dict)
+    status_counts: dict[str, int] = field(default_factory=dict)
 
     def bump(self, reason: str, n: int = 1) -> None:
         self.by_reason[reason] = self.by_reason.get(reason, 0) + n
@@ -299,6 +313,36 @@ class ZergError(Exception):
 
 class CrawlError(ZergError):
     """Fatal crawl error."""
+
+
+class DownloadError(ZergError):
+    """A transport or response-limit failure after one or more attempts."""
+
+    def __init__(
+        self,
+        request: Request,
+        *,
+        kind: str,
+        attempts: int = 1,
+        cause: BaseException | None = None,
+        limit: int | None = None,
+        received: int | None = None,
+    ) -> None:
+        self.request = request
+        self.kind = kind
+        self.attempts = max(1, attempts)
+        self.retries = self.attempts - 1
+        self.cause = cause
+        self.limit = limit
+        self.received = received
+        details = [kind, request.url, f"attempts={self.attempts}"]
+        if limit is not None:
+            details.append(f"limit={limit}")
+        if received is not None:
+            details.append(f"received={received}")
+        if cause is not None:
+            details.append(f"cause={type(cause).__name__}: {cause}")
+        super().__init__(" ".join(details))
 
 
 class Item(TypedDict, total=False):

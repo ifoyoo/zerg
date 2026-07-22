@@ -18,12 +18,14 @@ from zerg.models import (
     REASON_PARSE,
     REASON_YIELD,
     Callback,
+    DownloadError,
     Failure,
     Request,
     Response,
     Stats,
 )
 from zerg.pipeline import Pipeline
+from zerg.rate import RateLimiter
 from zerg.scheduler import Scheduler
 from zerg.spider import Spider
 
@@ -76,6 +78,7 @@ def _build_fetcher(spider: Spider) -> Any:
             impersonate=spider.impersonate,
             headers=headers,
             proxy=spider.proxy,
+            max_response_bytes=spider.max_response_bytes,
         )
 
     return Fetch(
@@ -84,6 +87,7 @@ def _build_fetcher(spider: Spider) -> Any:
         max_retries=spider.max_retries,
         headers=headers,
         proxy=spider.proxy,
+        max_response_bytes=spider.max_response_bytes,
     )
 
 
@@ -155,18 +159,30 @@ class Engine:
         scheduler = Scheduler(
             allowed_domains=spider.allowed_domains,
             max_depth=spider.max_depth,
+            max_pending=spider.max_pending_requests,
         )
         observers = self._observers
         _call_observers(observers, "on_start", spider)
 
-        async def enqueue(req: Request) -> None:
-            scheduler.push(req)
+        rate = spider.requests_per_second
+        if rate is None and spider.delay > 0:
+            rate = 1.0 / spider.delay
+        limiter = RateLimiter(rate, spider.burst)
+        n_workers = max(1, spider.concurrency)
+        challenge_set = set(spider.challenge_statuses or [])
+
+        async def enqueue_seed(req: Request) -> None:
+            if await scheduler.enqueue(req):
+                _call_observers(observers, "on_request", req)
+
+        def enqueue_child(req: Request) -> None:
+            if scheduler.push(req):
+                _call_observers(observers, "on_request", req)
 
         async def handle_yields(raw: Any, *, source: str) -> None:
             async for result in _iterate_results(raw):
                 if isinstance(result, Request):
-                    _call_observers(observers, "on_request", result)
-                    await enqueue(result)
+                    enqueue_child(result)
                 elif isinstance(result, dict):
                     _call_observers(observers, "on_item", result)
                     out = await self._pipeline.process(result, spider)
@@ -193,100 +209,136 @@ class Engine:
                 zlog(spider.name, "fail %s", failure)
                 return
             try:
-                raw = fn(failure)
-                await handle_yields(raw, source="errback")
-            except Exception as e:
+                await handle_yields(fn(failure), source="errback")
+            except Exception as exc:
                 stats.errors += 1
                 stats.bump(REASON_ERRBACK)
-                zlog(spider.name, "errback error %s: %s", failure.url, e)
+                zlog(spider.name, "errback error %s: %s", failure.url, exc)
+
+        async def process_request(req: Request) -> None:
+            try:
+                req = spider.prepare_request(req)
+                await limiter.acquire()
+                stats.requests += 1
+                try:
+                    resp = await fetcher.fetch(req)
+                except asyncio.CancelledError:
+                    raise
+                except DownloadError as exc:
+                    stats.retries += exc.retries
+                    if exc.kind == "timeout":
+                        stats.timeouts += 1
+                    await dispatch_failure(
+                        Failure(
+                            request=req,
+                            reason=REASON_DOWNLOAD,
+                            exception=exc,
+                        )
+                    )
+                    return
+                except Exception as exc:
+                    error = DownloadError(req, kind="backend", cause=exc)
+                    await dispatch_failure(
+                        Failure(
+                            request=req,
+                            reason=REASON_DOWNLOAD,
+                            exception=error,
+                        )
+                    )
+                    return
+                if resp is None:
+                    await dispatch_failure(Failure(request=req, reason=REASON_DOWNLOAD))
+                    return
+                stats.retries += resp.retries
+                stats.downloaded_bytes += resp.bytes_received
+                status = str(resp.status)
+                stats.status_counts[status] = stats.status_counts.get(status, 0) + 1
+                _call_observers(observers, "on_response", resp)
+                if resp.status >= 400:
+                    if resp.status in challenge_set:
+                        stats.challenges += 1
+                        stats.bump("challenge")
+                    else:
+                        await dispatch_failure(
+                            Failure(
+                                request=req,
+                                reason=REASON_HTTP,
+                                status=resp.status,
+                                response=resp,
+                            )
+                        )
+                        return
+
+                callback = _resolve_callback(spider, req.callback)
+                if callback is None:
+                    await dispatch_failure(
+                        Failure(
+                            request=req,
+                            reason=REASON_CALLBACK,
+                            status=resp.status,
+                            response=resp,
+                            exception=AttributeError(
+                                f"missing callback {req.callback!r}"
+                            ),
+                        )
+                    )
+                    return
+                try:
+                    source = (
+                        req.callback
+                        if isinstance(req.callback, str)
+                        else getattr(req.callback, "__name__", "callback")
+                    )
+                    await handle_yields(callback(resp), source=str(source))
+                except Exception as exc:
+                    await dispatch_failure(
+                        Failure(
+                            request=req,
+                            reason=REASON_PARSE,
+                            status=resp.status,
+                            response=resp,
+                            exception=exc,
+                        )
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error = DownloadError(req, kind="backend", cause=exc)
+                await dispatch_failure(
+                    Failure(
+                        request=req,
+                        reason=REASON_DOWNLOAD,
+                        exception=error,
+                    )
+                )
 
         async def worker() -> None:
             while True:
                 req = await scheduler.pop()
                 try:
-                    if spider.delay:
-                        await asyncio.sleep(spider.delay)
-
-                    req = spider.prepare_request(req)
-                    stats.requests += 1
-
-                    resp = await fetcher.fetch(req)
-                    if resp is None:
-                        await dispatch_failure(
-                            Failure(request=req, reason=REASON_DOWNLOAD)
-                        )
-                        continue
-                    _call_observers(observers, "on_response", resp)
-                    if resp.status >= 400:
-                        challenge_set = set(
-                            getattr(spider, "challenge_statuses", None) or []
-                        )
-                        if resp.status in challenge_set:
-                            stats.challenges += 1
-                            stats.bump("challenge")
-                        else:
-                            await dispatch_failure(
-                                Failure(
-                                    request=req,
-                                    reason=REASON_HTTP,
-                                    status=resp.status,
-                                    response=resp,
-                                )
-                            )
-                            continue
-
-                    callback = _resolve_callback(spider, req.callback)
-                    if callback is None:
-                        await dispatch_failure(
-                            Failure(
-                                request=req,
-                                reason=REASON_CALLBACK,
-                                status=resp.status,
-                                response=resp,
-                                exception=AttributeError(
-                                    f"missing callback {req.callback!r}"
-                                ),
-                            )
-                        )
-                        continue
-
-                    try:
-                        raw = callback(resp)
-                        source = (
-                            req.callback
-                            if isinstance(req.callback, str)
-                            else getattr(req.callback, "__name__", "callback")
-                        )
-                        await handle_yields(raw, source=str(source))
-                    except Exception as e:
-                        await dispatch_failure(
-                            Failure(
-                                request=req,
-                                reason=REASON_PARSE,
-                                status=resp.status,
-                                response=resp,
-                                exception=e,
-                            )
-                        )
+                    await process_request(req)
                 finally:
                     scheduler.task_done()
 
-        await self._pipeline.open(spider)
-
-        n_workers = max(1, spider.concurrency)
-        workers = [asyncio.create_task(worker()) for _ in range(n_workers)]
+        pipeline_open = False
+        workers: list[asyncio.Task[Any]] = []
         try:
+            await self._pipeline.open(spider)
+            pipeline_open = True
+            workers = [asyncio.create_task(worker()) for _ in range(n_workers)]
             async for req in spider.start():
-                await enqueue(req)
-
+                await enqueue_seed(req)
             await scheduler.join()
         finally:
-            for w in workers:
-                w.cancel()
+            for task in workers:
+                task.cancel()
             await asyncio.gather(*workers, return_exceptions=True)
-            await self._pipeline.close(spider)
+            if pipeline_open:
+                await self._pipeline.close(spider)
 
         stats.filtered = scheduler.filtered
+        stats.queue_peak = scheduler.queue_peak
+        stats.queue_rejected = scheduler.rejected
         stats.duration_s = round(time.perf_counter() - t0, 3)
         out = stats.as_dict()
         req_n = int(out.get("requests") or 0)
@@ -297,10 +349,14 @@ class Engine:
         if threshold is None:
             out["healthy"] = True
         else:
-            out["healthy"] = err_rate <= float(threshold) and (
-                int(out.get("items") or 0) > 0
-                or int(out.get("challenges") or 0) > 0
-                or req_n == 0
+            out["healthy"] = (
+                err_rate <= float(threshold)
+                and int(out.get("queue_rejected") or 0) == 0
+                and (
+                    int(out.get("items") or 0) > 0
+                    or int(out.get("challenges") or 0) > 0
+                    or req_n == 0
+                )
             )
         _call_observers(observers, "on_finish", spider, out)
         if self._on_finish is not None:
