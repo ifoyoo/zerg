@@ -3,12 +3,11 @@
 Defaults bias toward *not* hoarding:
 - media is opt-in and byte-capped
 - jsonl can cap item count
-- ``gc()`` prunes old spider dirs, media, and evo signals
+- ``gc()`` prunes old spider directories and media
 """
 
 from __future__ import annotations
 
-import json
 import shutil
 import time
 from dataclasses import asdict, dataclass, field
@@ -22,7 +21,6 @@ DEFAULT_MAX_MEDIA_FILE_BYTES = 5 * 1024 * 1024  # 5 MiB / file
 DEFAULT_MAX_MEDIA_TOTAL_BYTES = 200 * 1024 * 1024  # 200 MiB / spider media tree
 DEFAULT_MAX_SPIDER_DIR_BYTES = 500 * 1024 * 1024  # 500 MiB / spider
 DEFAULT_MAX_DATA_BYTES = 5 * 1024 * 1024 * 1024  # 5 GiB / data root
-DEFAULT_EVO_SIGNAL_LINES = 2000
 DEFAULT_KEEP_SPIDERS = None  # None = keep all names; int = newest N by mtime
 DEFAULT_MAX_AGE_DAYS = None  # None = no age prune
 
@@ -96,9 +94,8 @@ class GCPolicy:
     max_spider_bytes: int | None = DEFAULT_MAX_SPIDER_DIR_BYTES
     drop_media: bool = False
     media_only: bool = False  # only purge media/ subdirs
-    evo_signal_lines: int = DEFAULT_EVO_SIGNAL_LINES
     dry_run: bool = False
-    protect: tuple[str, ...] = ("evo",)  # never delete these top-level names entirely
+    protect: tuple[str, ...] = ()
 
 
 @dataclass
@@ -132,30 +129,6 @@ def _rm(path: Path, result: GCResult) -> None:
     result.freed += size
 
 
-def _trim_jsonl(path: Path, keep_lines: int, result: GCResult) -> None:
-    if not path.exists() or keep_lines <= 0:
-        return
-    try:
-        text = path.read_text(encoding="utf-8")
-    except OSError:
-        return
-    lines = text.splitlines()
-    if len(lines) <= keep_lines:
-        return
-    drop = len(lines) - keep_lines
-    # approximate freed: avg line size
-    old = path.stat().st_size
-    kept = "\n".join(lines[-keep_lines:]) + "\n"
-    if result.dry_run:
-        result.trimmed.append(f"{path} drop={drop} lines")
-        result.freed += max(0, old - len(kept.encode()))
-        return
-    path.write_text(kept, encoding="utf-8")
-    new = path.stat().st_size
-    result.trimmed.append(f"{path} drop={drop} lines")
-    result.freed += max(0, old - new)
-
-
 def gc(
     root: str | Path = "data",
     policy: GCPolicy | None = None,
@@ -183,9 +156,6 @@ def gc(
                 if media_dir.is_dir():
                     _rm(media_dir, result)
         if pol.media_only:
-            _trim_jsonl(
-                root / "evo" / "signals.jsonl", pol.evo_signal_lines, result
-            )
             return result
 
     # 2) age-based spider dir prune
@@ -243,9 +213,6 @@ def gc(
                 break
             dirs.sort(key=lambda p: p.stat().st_mtime)  # oldest first
             _rm(dirs[0], result)
-
-    # 6) evo signals rotation
-    _trim_jsonl(root / "evo" / "signals.jsonl", pol.evo_signal_lines, result)
 
     return result
 
@@ -315,13 +282,6 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="cap each spider dir in MiB",
     )
-    p_gc.add_argument(
-        "--evo-lines",
-        type=int,
-        default=DEFAULT_EVO_SIGNAL_LINES,
-        help="keep last N evo signal lines",
-    )
-
     args = ap.parse_args(argv)
     cmd = args.cmd or "usage"
 
@@ -347,7 +307,6 @@ def main(argv: list[str] | None = None) -> int:
             max_spider_bytes=max_spider,
             drop_media=args.drop_media,
             media_only=args.media_only,
-            evo_signal_lines=args.evo_lines,
             dry_run=args.dry_run,
         )
         before = usage(args.root)

@@ -1,8 +1,7 @@
-# local products / feed fleet (not part of published core)
+# local crawl application and runtime products (not part of published core)
 data/
 spiders/
 notes/
-feed/
 DESIGN.md
 REPORT.md
 
