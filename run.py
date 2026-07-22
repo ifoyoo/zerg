@@ -104,9 +104,7 @@ def main() -> int:
         )
 
     ok = sum(
-        1
-        for s in results.values()
-        if s.get("items", 0) > 0 and not s.get("exception")
+        1 for s in results.values() if s.get("items", 0) > 0 and not s.get("exception")
     )
     total_items = sum(s.get("items", 0) for s in results.values())
     total_err = sum(s.get("errors", 0) for s in results.values())

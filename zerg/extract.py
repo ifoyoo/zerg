@@ -101,9 +101,7 @@ def feed_items(response: Response) -> list[dict[str, Any]]:
                         enclosure.get("url") if enclosure is not None else ""
                     ),
                     "categories": [
-                        _text(c)
-                        for c in _find_children(item, "category")
-                        if _text(c)
+                        _text(c) for c in _find_children(item, "category") if _text(c)
                     ],
                     "source": "rss",
                 }
@@ -121,9 +119,7 @@ def feed_items(response: Response) -> list[dict[str, Any]]:
                     break
                 if not link and href:
                     link = href
-            content_el = _find_child(entry, "content") or _find_child(
-                entry, "summary"
-            )
+            content_el = _find_child(entry, "content") or _find_child(entry, "summary")
             author_el = _find_child(entry, "author")
             items.append(
                 {
@@ -226,8 +222,7 @@ def table_rows(
     results: list[dict[str, str]] = []
     for row in body:
         item = {
-            headers[i]: (row[i] if i < len(row) else "")
-            for i in range(len(headers))
+            headers[i]: (row[i] if i < len(row) else "") for i in range(len(headers))
         }
         results.append(item)
     return results

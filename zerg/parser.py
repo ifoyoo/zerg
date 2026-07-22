@@ -52,9 +52,7 @@ class Parser:
     def text(self) -> str:
         """Visible text (lazy)."""
         if self.__text is None:
-            self.__text = (
-                self._tree.body.text(strip=True) if self._tree.body else ""
-            )
+            self.__text = self._tree.body.text(strip=True) if self._tree.body else ""
         return self.__text
 
     def text_lines(self) -> list[str]:

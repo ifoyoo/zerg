@@ -52,9 +52,7 @@ def replace_query(url: str, **params: Any) -> str:
         for val in vals:
             flat.append((k, val))
     query = urlencode(flat)
-    return urlunsplit(
-        (parts.scheme, parts.netloc, parts.path, query, parts.fragment)
-    )
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 def parse_link_header(value: str | None) -> dict[str, str]:
@@ -133,11 +131,7 @@ def detect_waf(
         and re.search(r"location(?:\.href|\.replace)?", body, re.I)
     )
     go_payload = bool(re.search(r"[;\s]go\(\{", body) or ";go(" in low)
-    jsl_marker = (
-        "__jsl" in low
-        or "jsl_clearance" in low
-        or "jsl_clearance_s" in low
-    )
+    jsl_marker = "__jsl" in low or "jsl_clearance" in low or "jsl_clearance_s" in low
     if (cookie_assign or go_payload or jsl_marker) and (
         short or challenge_status or status == 521
     ):
@@ -214,4 +208,3 @@ def rate_limit_headers(headers: dict[str, str] | None) -> dict[str, int | str | 
         "resource": h.get("x-ratelimit-resource"),
         "retry_after": h.get("retry-after"),
     }
-

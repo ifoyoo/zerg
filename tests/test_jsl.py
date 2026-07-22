@@ -44,12 +44,7 @@ def test_parse_cookie_pair():
 def test_process_jsl_html_step1_and_block():
     from zerg.jsl import process_jsl_html
 
-    html = (
-        "<script>document.cookie=('_')+('_')+('j')+('s')+('l')+('_')+('c')"
-        "+('l')+('e')+('a')+('r')+('a')+('n')+('c')+('e')+('_')+('s')+('=')"
-        "+('1')+('2')+('3');location.href=1</script>"
-    )
-    # may need node for full expr; pure strings path:
+    # Pure string expression path:
     html2 = "<script>document.cookie=('a')+('=')+('b');location</script>"
     r = process_jsl_html(html2)
     assert r["action"] == "retry"

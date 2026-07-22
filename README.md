@@ -113,7 +113,7 @@ Spider.start()
 | `CrawlObserver` | 接收 metrics、tracing 和进度事件 |
 | `crawl_many()` | 有界并发运行多个 spiders |
 
-每个 spider 的 `concurrency` 同时决定 worker 数量和默认连接池大小，是单个 spider 的主要并发参数。
+每个 spider 的 `concurrency` 同时决定 worker 数量和默认连接池大小。请求 frontier、发起速率和响应内存分别由 `max_pending_requests`、`requests_per_second` 和 `max_response_bytes` 控制。
 
 ## Spider
 
@@ -128,9 +128,13 @@ class NewsSpider(Spider):
     start_urls = ["https://example.com/news"]
 
     concurrency = 16
-    delay = 0
+    requests_per_second = 10
+    burst = 2
+    max_pending_requests = 1000
+
     timeout = 30
     max_retries = 3
+    max_response_bytes = 10 * 1024 * 1024
 
     allowed_domains = ["example.com"]
     max_depth = 2
@@ -149,6 +153,20 @@ callback 可以 yield：
 - `None`：不产生结果
 
 callback 支持 async generator、coroutine 和普通 iterable。
+
+### Concurrency and backpressure
+
+| 设置 | 默认值 | 作用 |
+|------|--------|------|
+| `concurrency` | `10` | 同时处理的 request workers 和连接池大小 |
+| `requests_per_second` | `None` | 整个 spider 共享的每秒请求启动速率 |
+| `burst` | `1` | token bucket 允许的瞬时请求数 |
+| `max_pending_requests` | `1000` | 等待队列上限；seed 会等待，callback 子请求满载时拒绝 |
+| `max_response_bytes` | `10 MiB` | 单个普通响应的最大 buffered body |
+
+`delay` 为兼容设置，现在按整个 spider 共享的请求间隔执行；例如 `delay = 0.5` 等价于约 `2 requests/s`。新代码建议使用语义更明确的 `requests_per_second`。
+
+为了保证 hard memory bound，callback 在 frontier 满载时产生的新请求会被拒绝并计入 `queue_rejected`；seed requests 则会等待可用空间。生产环境应监控该指标并按抓取规模调整上限。设置 `max_pending_requests = 0` 可以关闭队列上限。
 
 ## Request and Response
 
@@ -295,6 +313,12 @@ items
 errors
 filtered
 challenges
+retries
+timeouts
+downloaded_bytes
+queue_peak
+queue_rejected
+status_counts
 duration_s
 error_rate
 healthy
@@ -374,6 +398,21 @@ Observer 异常会被隔离，不会中断 crawl。
 - retry and backoff
 - proxy
 - per-request headers
+- incremental response size limits
+- structured timeout and network errors
+
+内置 backend 的传输失败会通过 `Failure.exception` 提供 `DownloadError`：
+
+```python
+from zerg import DownloadError
+
+if isinstance(failure.exception, DownloadError):
+    print(failure.exception.kind, failure.exception.attempts)
+```
+
+`kind` 可能是 `timeout`、`network`、`response_too_large` 或 `backend`。
+
+`media()` 使用支持 streaming 的 fetcher 时会逐块写入临时文件，成功后原子替换最终文件；旧的 custom fetcher 会自动使用有大小限制的 buffered fallback。
 
 需要 browser TLS fingerprint 时：
 
@@ -383,7 +422,16 @@ class ProtectedSpider(Spider):
     impersonate = "chrome124"
 ```
 
-该功能需要安装 `impersonate` extra。
+该功能需要安装 `impersonate` extra，且 TLS verification 默认开启。
+
+## Benchmarks
+
+```bash
+uv run pytest benchmarks/ --benchmark-only
+uv run pytest benchmarks/ --benchmark-only --benchmark-json benchmark.json
+```
+
+benchmark 覆盖 scheduler admission、HTML extraction、engine throughput 和 bounded fan-out。CI 只执行 smoke run，不设置依赖具体机器的硬性能阈值。
 
 ## Design
 

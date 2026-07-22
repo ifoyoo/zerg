@@ -41,9 +41,7 @@ class Pipeline:
             if hasattr(result, "__await__"):
                 await result
 
-    async def process(
-        self, item: dict[str, Any], spider: Any
-    ) -> dict[str, Any] | None:
+    async def process(self, item: dict[str, Any], spider: Any) -> dict[str, Any] | None:
         for p in self._processors:
             process_item = getattr(p, "process_item", None)
             if process_item is not None:
@@ -111,9 +109,7 @@ class JsonlPipeline:
             self._buf.clear()
             self._n = 0
 
-    async def process_item(
-        self, item: dict[str, Any], spider: Any
-    ) -> dict[str, Any]:
+    async def process_item(self, item: dict[str, Any], spider: Any) -> dict[str, Any]:
         assert self._file is not None
         line = orjson.dumps(item) + b"\n"
         self._buf.extend(line)
@@ -148,17 +144,13 @@ class CsvPipeline:
         path = self._path or _default_data_path(spider, "items.csv")
         path.parent.mkdir(parents=True, exist_ok=True)
         self._path = path
-        new_file = (
-            self._mode == "w" or not path.exists() or path.stat().st_size == 0
-        )
+        new_file = self._mode == "w" or not path.exists() or path.stat().st_size == 0
         self._file = open(path, self._mode, newline="", encoding="utf-8")
         self._writer = csv.DictWriter(self._file, fieldnames=self.columns)
         if new_file or self._file.tell() == 0:
             self._writer.writeheader()
 
-    async def process_item(
-        self, item: dict[str, Any], spider: Any
-    ) -> dict[str, Any]:
+    async def process_item(self, item: dict[str, Any], spider: Any) -> dict[str, Any]:
         assert self._writer is not None
         self._writer.writerow({k: item.get(k, "") for k in self.columns})
         return item
@@ -177,9 +169,7 @@ class PrintPipeline:
         self.max_items = max_items
         self._n = 0
 
-    async def process_item(
-        self, item: dict[str, Any], spider: Any
-    ) -> dict[str, Any]:
+    async def process_item(self, item: dict[str, Any], spider: Any) -> dict[str, Any]:
         if self.max_items is not None and self._n >= self.max_items:
             return item
         self._n += 1
@@ -194,9 +184,7 @@ def jsonl(
     buf_items: int = _JSONL_BUF_ITEMS,
     buf_bytes: int = _JSONL_BUF_BYTES,
 ) -> JsonlPipeline:
-    return JsonlPipeline(
-        path, mode=mode, buf_items=buf_items, buf_bytes=buf_bytes
-    )
+    return JsonlPipeline(path, mode=mode, buf_items=buf_items, buf_bytes=buf_bytes)
 
 
 def csv_pipe(

@@ -173,11 +173,7 @@ def gc(
 
     # 3) keep only newest N spider dirs
     if pol.keep_spiders is not None:
-        dirs = [
-            c
-            for c in root.iterdir()
-            if c.is_dir() and c.name not in protect
-        ]
+        dirs = [c for c in root.iterdir() if c.is_dir() and c.name not in protect]
         dirs.sort(key=lambda p: p.stat().st_mtime, reverse=True)
         for old in dirs[pol.keep_spiders :]:
             _rm(old, result)
@@ -229,7 +225,7 @@ def print_usage(root: str | Path = "data") -> Usage:
 
 
 class CapItems:
-    """Pipeline that drops items after ``max_items`` (still counts as processed None)."""
+    """Drop items after ``max_items`` by returning ``None``."""
 
     def __init__(self, max_items: int = DEFAULT_MAX_JSONL_ITEMS):
         self.max_items = max(0, max_items)
@@ -257,9 +253,7 @@ def main(argv: list[str] | None = None) -> int:
     import argparse
 
     ap = argparse.ArgumentParser(description="zerg storage / gc")
-    ap.add_argument(
-        "--root", type=Path, default=Path("data"), help="data root"
-    )
+    ap.add_argument("--root", type=Path, default=Path("data"), help="data root")
     sub = ap.add_subparsers(dest="cmd")
 
     sub.add_parser("usage", help="show disk usage")

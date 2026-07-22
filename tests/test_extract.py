@@ -108,14 +108,20 @@ def test_embedded_json_and_ld():
 def test_detect_waf_kinds():
     from zerg.util import detect_waf
 
-    assert detect_waf(
-        "<script>document.cookie=('_')+('_')+('jsl');location</script>",
-        status=521,
-    )["kind"] == "jsl"
-    assert detect_waf(
-        '<script src="/abc/probe.js"></script> var buid="x"',
-        status=202,
-    )["kind"] == "waf_probe"
+    assert (
+        detect_waf(
+            "<script>document.cookie=('_')+('_')+('jsl');location</script>",
+            status=521,
+        )["kind"]
+        == "jsl"
+    )
+    assert (
+        detect_waf(
+            '<script src="/abc/probe.js"></script> var buid="x"',
+            status=202,
+        )["kind"]
+        == "waf_probe"
+    )
     assert detect_waf("本站开启了验证码保护 captcha", status=200)["kind"] == "captcha"
     assert detect_waf("<html>" + "x" * 600, status=200)["kind"] == "ok"
 
@@ -124,8 +130,8 @@ def test_strip_jsonp():
     from zerg.extract import strip_jsonp
 
     assert strip_jsonp('{"a":1}') == {"a": 1}
-    assert strip_jsonp("data_callback([{\"x\":1}])") == [{"x": 1}]
-    assert strip_jsonp("cb({\"k\": \"v\"});") == {"k": "v"}
+    assert strip_jsonp('data_callback([{"x":1}])') == [{"x": 1}]
+    assert strip_jsonp('cb({"k": "v"});') == {"k": "v"}
 
 
 def test_form_body():

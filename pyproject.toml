@@ -1,6 +1,6 @@
 [project]
 name = "zerg"
-version = "0.1.0"
+version = "0.2.0"
 description = "异虫，倾巢而出 — small, sharp, and hungry"
 requires-python = ">=3.12"
 dependencies = [
@@ -10,7 +10,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["ipython", "pytest", "pytest-asyncio"]
 impersonate = ["curl_cffi>=0.7"]
 
 [build-system]
@@ -26,6 +25,24 @@ testpaths = ["tests"]
 
 [dependency-groups]
 dev = [
+    "ipython>=9.0",
     "pytest>=8.0",
     "pytest-asyncio>=0.24",
+    "pytest-benchmark>=5.1",
+    "ruff>=0.12",
 ]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 88
+extend-exclude = ["spiders", "data", "notes"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+ignore = ["ASYNC230", "ASYNC240"]
+
+[tool.ruff.lint.per-file-ignores]
+"zerg/__init__.py" = ["F401"]
+
+[tool.ruff.format]
+quote-style = "double"

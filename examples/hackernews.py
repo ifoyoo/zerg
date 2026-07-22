@@ -1,6 +1,6 @@
 """Hacker News front page example.
 
-    uv run python examples/hackernews.py
+uv run python examples/hackernews.py
 """
 
 from __future__ import annotations

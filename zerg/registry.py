@@ -8,7 +8,6 @@ import pkgutil
 import sys
 from pathlib import Path
 from types import ModuleType
-from typing import Type
 
 from zerg.spider import Spider
 
@@ -33,13 +32,13 @@ def _iter_modules(package: str) -> list[str]:
     return names
 
 
-def discover(package: str = "spiders") -> dict[str, Type[Spider]]:
+def discover(package: str = "spiders") -> dict[str, type[Spider]]:
     """Return ``{name: SpiderClass}``."""
     cwd = str(Path.cwd())
     if cwd not in sys.path:
         sys.path.insert(0, cwd)
 
-    found: dict[str, Type[Spider]] = {}
+    found: dict[str, type[Spider]] = {}
     for modname in _iter_modules(package):
         try:
             mod: ModuleType = importlib.import_module(modname)
@@ -63,7 +62,7 @@ def discover(package: str = "spiders") -> dict[str, Type[Spider]]:
     return found
 
 
-def get(name: str, package: str = "spiders") -> Type[Spider]:
+def get(name: str, package: str = "spiders") -> type[Spider]:
     spiders = discover(package)
     if name not in spiders:
         known = ", ".join(sorted(spiders)) or "(none)"

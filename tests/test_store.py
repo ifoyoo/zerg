@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from zerg.store import GCPolicy, dir_size, gc, human_bytes, usage
+from zerg.store import GCPolicy, gc, human_bytes, usage
 
 
 def test_human_bytes():
