@@ -1,36 +1,82 @@
 <p align="center">
-  <img src="assets/zerg-throne.jpg" alt="The Zerg awakens" width="900"/>
+  <img src="assets/zerg-throne.jpg" alt="The Zerg awakens" width="920">
 </p>
 
-<h1 align="center">zerg</h1>
+<h1 align="center">Zerg</h1>
 
 <p align="center">
-  <b>small, sharp, and hungry.</b><br/>
-  异虫，倾巢而出。
+  <strong>异虫，倾巢而出。</strong><br>
+  A small, sharp, and hungry async crawler framework for Python.
 </p>
 
-> 古老传说中，异虫沉眠于地底，不争鸣，不显形。<br/>
+<p align="center">
+  <a href="https://github.com/ifoyoo/zerg/actions/workflows/ci.yml"><img src="https://github.com/ifoyoo/zerg/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <a href="https://github.com/ifoyoo/zerg/releases/latest"><img src="https://img.shields.io/github/v/release/ifoyoo/zerg?display_name=tag&sort=semver" alt="Release"></a>
+  <img src="https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white" alt="Python 3.12+">
+  <a href="https://github.com/astral-sh/ruff"><img src="https://img.shields.io/badge/code%20style-Ruff-D7FF64?logo=ruff&logoColor=261230" alt="Ruff"></a>
+</p>
+
+<p align="center">
+  Async-first &nbsp;·&nbsp; Bounded frontier &nbsp;·&nbsp; Shared rate limits<br>
+  Streaming downloads &nbsp;·&nbsp; Structured failures &nbsp;·&nbsp; Observable runtime
+</p>
+
+> 古老传说中，异虫沉眠于地底，不争鸣，不显形。<br>
 > 当巢群苏醒，万千异虫循同一意志奔赴四方，所过之处，信息尽归虫巢。
 
-`zerg` 是一个轻量、高性能的 Python async 爬虫框架。
+Zerg 是一个轻量、高性能的 Python async 爬虫框架。它把并发调度、连接池、请求去重、速率限制、响应边界、解析和 pipeline 组合成一条紧凑的 crawl path，同时把站点逻辑留在 spider 中。
 
-它提供并发调度、连接池、请求去重、域名与深度过滤、解析工具、失败处理和数据 pipeline，同时保持核心 API 简单直接。
+<p align="center">
+  <a href="#quick-start">Quick Start</a> ·
+  <a href="#architecture">Architecture</a> ·
+  <a href="#recipes">Recipes</a> ·
+  <a href="#configuration">Configuration</a> ·
+  <a href="#operations">Operations</a> ·
+  <a href="https://github.com/ifoyoo/zerg/releases/tag/v0.2.0">v0.2.0</a>
+</p>
 
-## Install
+---
 
-要求 Python 3.12+。
+## Why Zerg
+
+| 能力 | 行为 |
+|---|---|
+| **Async crawl engine** | 每个 spider 使用独立 worker pool 和 HTTP connection pool |
+| **Bounded frontier** | 限制待处理 request 数量，避免高 fan-out 无界占用内存 |
+| **Shared rate control** | workers 共享 token bucket，而不是各自 sleep |
+| **Streaming I/O** | 响应边读边限流；媒体写入临时文件后原子替换 |
+| **Structured failures** | timeout、network、oversize 和 backend error 保留原因与 attempts |
+| **Composable pipelines** | JSONL、CSV、schema filtering、media 和自定义 processor |
+| **Runtime signals** | queue peak、rejections、retries、bytes、status counts 和 health |
+
+Zerg 适合 API、HTML、RSS、sitemap 和批量站点抓取。它不是 browser automation framework；必须执行复杂前端交互时，应在应用层接入专门的 browser backend。
+
+## Quick Start
+
+### Install
+
+要求 Python 3.12+。当前正式版本为 [`v0.2.0`](https://github.com/ifoyoo/zerg/releases/tag/v0.2.0)。
 
 ```bash
-uv sync
+uv add "zerg @ git+https://github.com/ifoyoo/zerg@v0.2.0"
 ```
 
-需要 browser TLS impersonation 时：
+也可以直接安装 release wheel：
 
 ```bash
-uv sync --extra impersonate
+uv pip install \
+  https://github.com/ifoyoo/zerg/releases/download/v0.2.0/zerg-0.2.0-py3-none-any.whl
 ```
 
-## Quick start
+从源码开发：
+
+```bash
+git clone https://github.com/ifoyoo/zerg.git
+cd zerg
+uv sync --group dev
+```
+
+### First spider
 
 ```python
 import asyncio
@@ -38,165 +84,219 @@ import asyncio
 from zerg import Spider, crawl, jsonl
 
 
-class MySpider(Spider):
-    name = "mysite"
-    start_urls = ["https://example.com"]
+class NewsSpider(Spider):
+    name = "news"
+    start_urls = ["https://example.com/news"]
+    allowed_domains = ["example.com"]
 
     concurrency = 8
-    allowed_domains = ["example.com"]
-    max_depth = 2
+    requests_per_second = 5
+    max_pending_requests = 500
 
     async def parse(self, response):
-        for href in response.links("a.item"):
-            yield response.follow(
-                href,
-                callback=self.parse_detail,
-            )
+        for href in response.links("a.article"):
+            yield response.follow(href, callback=self.parse_article)
 
-    async def parse_detail(self, response):
+    async def parse_article(self, response):
         yield {
             "title": response.css("h1"),
             "url": response.url,
         }
 
 
-asyncio.run(
-    crawl(
-        MySpider,
-        pipelines=[jsonl()],
-    )
-)
+async def main():
+    stats = await crawl(NewsSpider, pipelines=[jsonl()])
+    print(stats["items"], stats["healthy"], stats["data_dir"])
+
+
+asyncio.run(main())
 ```
 
-结果默认写入：
+输出默认写入：
 
 ```text
-data/<spider.name>/items.jsonl
+data/news/items.jsonl
 ```
 
-也可以运行内置示例：
+仓库内也提供一个可直接运行的 Hacker News 示例：
 
 ```bash
 uv run python examples/hackernews.py
 ```
 
-## How it works
+## Architecture
 
-```text
-Spider.start()
-    │
-    ▼
- Request ──▶ Scheduler ──▶ Worker × concurrency
-                 │                   │
-                 │                 Fetch
-                 │                   │
-                 │                Response
-                 │                   │
-                 │            callback / errback
-                 │                   │
-                 └──── Request ◀─────┤
-                                     │
-                                    dict
-                                     │
-                                     ▼
-                                  Pipeline
+```mermaid
+flowchart LR
+    S[Spider.start] --> Q[Bounded Scheduler]
+    Q --> R[Shared RateLimiter]
+    R --> W[Workers]
+    W --> H[HTTP Fetcher]
+    H --> X[Response]
+    X --> C[callback / errback]
+    C -->|Request| Q
+    C -->|dict| P[Pipeline]
+    P --> O[(JSONL / CSV / Media)]
 ```
 
-| 组件 | 作用 |
-|------|------|
-| `Spider` | 定义站点入口、并发参数和解析逻辑 |
-| `Engine` | 管理单个 spider 的完整运行周期 |
-| `Scheduler` | FIFO 调度、请求去重、域名和深度过滤 |
-| `Fetch` | 基于 httpx 的 async HTTP/2 下载器 |
-| `Response` | 封装响应内容、解析器和 follow 操作 |
+| 组件 | 职责 |
+|---|---|
+| `Spider` | 定义入口、站点配置和 callback |
+| `Scheduler` | FIFO frontier、dedup、domain/depth filter 和 queue accounting |
+| `RateLimiter` | 控制整个 spider 的 request start rate 和 burst |
+| `Fetch` | HTTP/2 connection pooling、retry、streamed body limits |
+| `Response` | lazy parser、CSS extraction、JSON 和 follow helpers |
 | `Pipeline` | 依次处理、过滤或持久化 item |
-| `CrawlObserver` | 接收 metrics、tracing 和进度事件 |
-| `crawl_many()` | 有界并发运行多个 spiders |
+| `CrawlObserver` | 接收 request、response、failure、item 和 finish 事件 |
 
-每个 spider 的 `concurrency` 同时决定 worker 数量和默认连接池大小。请求 frontier、发起速率和响应内存分别由 `max_pending_requests`、`requests_per_second` 和 `max_response_bytes` 控制。
+`concurrency` 控制 in-flight workers；`requests_per_second` 控制共享请求速率；`max_pending_requests` 控制 frontier 内存；`max_response_bytes` 控制单个普通响应的 buffered body。四个参数彼此独立。
 
-## Spider
+> [!IMPORTANT]
+> 为保证 hard memory bound，bounded frontier 满载时，callback 新产生的 requests 会被拒绝并计入 `queue_rejected`；seed requests 会等待容量。生产任务应监控该字段。需要零拒绝的无界 frontier 时，设置 `max_pending_requests = 0`。
 
-一个 spider 通常只需要定义入口和 `parse()`：
+## Recipes
+
+### Follow pages
 
 ```python
-from zerg import Spider
-
-
-class NewsSpider(Spider):
-    name = "news"
-    start_urls = ["https://example.com/news"]
-
-    concurrency = 16
-    requests_per_second = 10
-    burst = 2
-    max_pending_requests = 1000
-
-    timeout = 30
-    max_retries = 3
-    max_response_bytes = 10 * 1024 * 1024
-
-    allowed_domains = ["example.com"]
-    max_depth = 2
-
-    async def parse(self, response):
-        yield {
-            "title": response.css("h1"),
-            "url": response.url,
-        }
+async def parse(self, response):
+    for href in response.links("a.item"):
+        yield response.follow(
+            href,
+            callback=self.parse_detail,
+            meta={"source": response.url},
+        )
 ```
 
-callback 可以 yield：
-
-- `Request`：继续调度新请求
-- `dict`：交给 item pipeline
-- `None`：不产生结果
-
-callback 支持 async generator、coroutine 和普通 iterable。
-
-### Concurrency and backpressure
-
-| 设置 | 默认值 | 作用 |
-|------|--------|------|
-| `concurrency` | `10` | 同时处理的 request workers 和连接池大小 |
-| `requests_per_second` | `None` | 整个 spider 共享的每秒请求启动速率 |
-| `burst` | `1` | token bucket 允许的瞬时请求数 |
-| `max_pending_requests` | `1000` | 等待队列上限；seed 会等待，callback 子请求满载时拒绝 |
-| `max_response_bytes` | `10 MiB` | 单个普通响应的最大 buffered body |
-
-`delay` 为兼容设置，现在按整个 spider 共享的请求间隔执行；例如 `delay = 0.5` 等价于约 `2 requests/s`。新代码建议使用语义更明确的 `requests_per_second`。
-
-为了保证 hard memory bound，callback 在 frontier 满载时产生的新请求会被拒绝并计入 `queue_rejected`；seed requests 则会等待可用空间。生产环境应监控该指标并按抓取规模调整上限。设置 `max_pending_requests = 0` 可以关闭队列上限。
-
-## Request and Response
-
-创建请求：
+### Call a JSON API
 
 ```python
 from zerg import Request
 
+
 yield Request(
-    "https://example.com/api",
+    "https://example.com/api/items",
     method="POST",
-    headers={"accept": "application/json"},
-    body=b'{"page":1}',
+    headers={"content-type": "application/json"},
+    body=b'{"page": 1}',
     callback=self.parse_api,
-    errback=self.handle_error,
+    errback=self.handle_api_error,
     meta={"page": 1},
 )
+
+
+async def parse_api(self, response):
+    for item in response.json()["items"]:
+        yield item
 ```
 
-从当前响应继续抓取：
+### Compose pipelines
 
 ```python
-yield response.follow(
-    "/detail/1",
-    callback=self.parse_detail,
-    meta={"source": "list"},
+from zerg import crawl, jsonl, require_keys
+
+
+stats = await crawl(
+    NewsSpider,
+    pipelines=[
+        require_keys("title", "url"),
+        jsonl(mode="w"),
+    ],
 )
 ```
 
-常用解析方法：
+内置 processors：
+
+| Pipeline | 用途 |
+|---|---|
+| `jsonl()` | buffered JSONL output |
+| `csv_pipe()` | fixed-column CSV output |
+| `print_pipe()` | terminal preview |
+| `require_keys()` | drop or fill incomplete items |
+| `media()` | bounded concurrent media streaming |
+| `cap_items()` | cap retained items |
+
+自定义 pipeline 只需实现 `process_item`；返回 `None` 会丢弃 item：
+
+```python
+class NormalizeTitle:
+    async def process_item(self, item, spider):
+        return {**item, "title": item.get("title", "").strip()}
+```
+
+<details>
+<summary><strong>Stream media with hard budgets</strong></summary>
+
+```python
+from zerg import crawl, jsonl, media
+
+
+stats = await crawl(
+    NewsSpider,
+    pipelines=[
+        media(
+            field="images",
+            max_files=10,
+            max_file_bytes=8 * 1024 * 1024,
+            max_total_bytes=512 * 1024 * 1024,
+        ),
+        jsonl(),
+    ],
+)
+```
+
+支持 streaming 的 fetcher 会逐 chunk 写入 `.part`，成功后 atomic rename。legacy custom fetcher 自动回退到 bounded buffered path。
+
+</details>
+
+<details>
+<summary><strong>Run multiple spiders</strong></summary>
+
+```python
+from zerg import crawl_many, jsonl
+
+
+results = await crawl_many(
+    [NewsSpider, ApiSpider, FeedSpider],
+    max_spiders=3,
+    pipelines_factory=lambda: [jsonl()],
+    data_dir="data",
+)
+```
+
+`max_spiders` 限制 spider-level concurrency；每个 spider 仍使用自己的 worker 和 rate settings。单个 spider 异常不会终止其他 spiders。
+
+```bash
+uv run python run.py --list
+uv run python run.py my_spider
+uv run python run.py --tag rss
+uv run python run.py --all --max-spiders 3
+```
+
+</details>
+
+<details>
+<summary><strong>Use browser TLS impersonation</strong></summary>
+
+源码环境先安装 optional dependency：
+
+```bash
+uv sync --extra impersonate
+```
+
+```python
+class ProtectedSpider(Spider):
+    use_impersonate = True
+    impersonate = "chrome124"
+```
+
+TLS verification 默认开启。
+
+</details>
+
+## Request & Response
+
+callback 可以 yield `Request`、`dict` 或 `None`，并支持 async generator、coroutine 和普通 iterable。
 
 ```python
 response.css("h1")
@@ -219,210 +319,122 @@ response.extract_all(
 )
 ```
 
-## Pipelines
-
-写入 JSONL：
-
-```python
-from zerg import crawl, jsonl
-
-stats = await crawl(
-    MySpider,
-    pipelines=[jsonl()],
-)
-```
-
-组合多个 pipeline：
-
-```python
-from zerg import jsonl, require_keys
-
-stats = await crawl(
-    MySpider,
-    pipelines=[
-        require_keys("title", "url"),
-        jsonl(mode="w"),
-    ],
-)
-```
-
-内置 pipeline：
-
-| Pipeline | 作用 |
-|----------|------|
-| `jsonl()` | Buffered JSONL 写入 |
-| `csv_pipe()` | 写入固定字段的 CSV |
-| `print_pipe()` | 输出 item 到终端 |
-| `require_keys()` | 校验、补全或过滤字段 |
-| `media()` | 并发下载图片或文件 |
-| `cap_items()` | 限制保留的 item 数量 |
-
-自定义 pipeline：
-
-```python
-class NormalizeTitle:
-    async def process_item(self, item, spider):
-        item = dict(item)
-        item["title"] = item.get("title", "").strip()
-        return item
-```
-
-返回 `None` 可以丢弃当前 item。
-
-## Error handling
-
-HTTP 错误、下载失败、callback 异常等会转换为 `Failure`：
-
-```python
-from zerg import Failure
-
-
-class MySpider(Spider):
-    async def errback(self, failure: Failure):
-        print(
-            failure.reason,
-            failure.status,
-            failure.url,
-            failure.exception,
-        )
-```
-
-也可以为单个请求指定 errback：
+`response.follow()` 会继承当前 URL context，并自动生成新的 `Request`：
 
 ```python
 yield response.follow(
-    href,
+    "/detail/1",
     callback=self.parse_detail,
     errback=self.handle_detail_error,
+    meta={"source": "list"},
 )
 ```
 
-运行结束后会返回统计信息：
+## Error Handling
+
+HTTP error、download failure 和 callback exception 都会转换为 `Failure`：
 
 ```python
-stats = await crawl(MySpider)
-print(stats)
+from zerg import DownloadError, Failure
+
+
+class NewsSpider(Spider):
+    async def errback(self, failure: Failure):
+        if isinstance(failure.exception, DownloadError):
+            print(
+                failure.exception.kind,
+                failure.exception.attempts,
+                failure.url,
+            )
 ```
 
-主要字段包括：
+内置 `DownloadError.kind`：
 
-```text
-spider
-requests
-items
-errors
-filtered
-challenges
-retries
-timeouts
-downloaded_bytes
-queue_peak
-queue_rejected
-status_counts
-duration_s
-error_rate
-healthy
-by_reason
-data_dir
-```
+| Kind | 含义 |
+|---|---|
+| `timeout` | transport timeout after retries |
+| `network` | connection、DNS 或 protocol failure |
+| `response_too_large` | body 超过 `max_response_bytes` |
+| `backend` | custom fetcher 抛出未结构化异常 |
 
-## Multiple spiders
+Failure 会保留 request、status、response、exception 和 reason，custom fetcher exception 不会杀死 worker 或卡住 scheduler completion。
 
-使用 `crawl_many()` 有界并发运行多个 spiders：
+## Configuration
+
+### Scheduling
+
+| Setting | Default | Description |
+|---|---:|---|
+| `concurrency` | `10` | request workers 和默认 connection pool size |
+| `requests_per_second` | `None` | spider-wide request start rate；`None` 为不限速 |
+| `burst` | `1` | token bucket capacity |
+| `max_pending_requests` | `1000` | bounded frontier size；`0` 为无界 |
+| `allowed_domains` | `[]` | allowed hostnames and subdomains |
+| `max_depth` | `None` | maximum request depth |
+
+`delay` 是 compatibility alias：`delay = 0.5` 约等于 `2 requests/s`，且对整个 spider 生效。新代码优先使用 `requests_per_second`。
+
+### HTTP
+
+| Setting | Default | Description |
+|---|---:|---|
+| `timeout` | `30.0` | request timeout in seconds |
+| `max_retries` | `3` | total transport/status attempts |
+| `max_response_bytes` | `10 MiB` | maximum buffered response body；`None` 禁用 |
+| `headers` | `{}` | spider-level headers merged into requests |
+| `proxy` | `None` | HTTP proxy URL |
+| `use_impersonate` | `False` | use `curl_cffi` backend |
+| `impersonate` | `None` | browser fingerprint target |
+| `challenge_statuses` | `[]` | statuses routed to callback instead of errback |
+
+### Health
+
+| Setting | Default | Description |
+|---|---:|---|
+| `health_error_rate` | `0.5` | error ratio threshold；`None` 禁用 ratio check |
+
+只要出现 `queue_rejected`，crawl 会被标记为 `healthy=False`，因为结果已经不完整。
+
+## Operations
+
+一次 crawl 返回 plain dictionary，适合直接输出到 logs、metrics 或 observer：
 
 ```python
-from zerg import crawl_many, jsonl
-
-results = await crawl_many(
-    [NewsSpider, ApiSpider, FeedSpider],
-    max_spiders=3,
-    pipelines_factory=lambda: [jsonl()],
-    data_dir="data",
-)
+stats = await crawl(NewsSpider)
+print(stats["requests"], stats["items"], stats["healthy"])
 ```
 
-`max_spiders` 控制同时运行的 spider 数量；每个 spider 内部仍使用自己的 `concurrency` 控制 request workers。
+| Metric | 说明 |
+|---|---|
+| `requests` / `items` | 已执行 requests 与保留 items |
+| `errors` / `by_reason` | failure 总量与原因分布 |
+| `filtered` | domain、depth 或 dedup filters |
+| `retries` / `timeouts` | transport reliability signals |
+| `downloaded_bytes` | successful buffered response bytes |
+| `status_counts` | HTTP status histogram |
+| `queue_peak` | frontier 实际峰值 |
+| `queue_rejected` | 因 bounded frontier 满载而拒绝的 callback requests |
+| `duration_s` / `error_rate` | duration and aggregate error ratio |
+| `healthy` | item/challenge、error ratio 和 queue completeness 组合结果 |
 
-单个 spider 抛出异常不会终止其他 spiders，其异常会记录在对应结果中。
-
-本地 spider package 也可以通过 runner 执行：
-
-```bash
-uv run python run.py --list
-uv run python run.py my_spider
-uv run python run.py --tag rss
-uv run python run.py --all --max-spiders 3
-```
-
-## Observability
-
-`CrawlObserver` 是可选的事件接口，可用于 metrics、tracing 或进度展示：
+### Observer
 
 ```python
 class MetricsObserver:
-    def on_start(self, spider):
-        print(f"start: {spider.name}")
-
     def on_response(self, response):
         print(response.status, response.url)
 
     def on_failure(self, failure):
         print(failure.reason, failure.url)
 
-    def on_item(self, item):
-        pass
-
-    def on_request(self, request):
-        pass
-
     def on_finish(self, spider, stats):
-        print(f"finish: {spider.name}", stats)
+        print(spider.name, stats["duration_s"], stats["healthy"])
 
 
-stats = await crawl(
-    MySpider,
-    observers=[MetricsObserver()],
-)
+stats = await crawl(NewsSpider, observers=[MetricsObserver()])
 ```
 
-Observer 异常会被隔离，不会中断 crawl。
-
-## HTTP backends
-
-默认下载器基于 `httpx`，支持：
-
-- async connection pooling
-- HTTP/2
-- timeout
-- redirect
-- retry and backoff
-- proxy
-- per-request headers
-- incremental response size limits
-- structured timeout and network errors
-
-内置 backend 的传输失败会通过 `Failure.exception` 提供 `DownloadError`：
-
-```python
-from zerg import DownloadError
-
-if isinstance(failure.exception, DownloadError):
-    print(failure.exception.kind, failure.exception.attempts)
-```
-
-`kind` 可能是 `timeout`、`network`、`response_too_large` 或 `backend`。
-
-`media()` 使用支持 streaming 的 fetcher 时会逐块写入临时文件，成功后原子替换最终文件；旧的 custom fetcher 会自动使用有大小限制的 buffered fallback。
-
-需要 browser TLS fingerprint 时：
-
-```python
-class ProtectedSpider(Spider):
-    use_impersonate = True
-    impersonate = "chrome124"
-```
-
-该功能需要安装 `impersonate` extra，且 TLS verification 默认开启。
+Observer exception 会被隔离，不会中断 crawl。
 
 ## Benchmarks
 
@@ -431,18 +443,49 @@ uv run pytest benchmarks/ --benchmark-only
 uv run pytest benchmarks/ --benchmark-only --benchmark-json benchmark.json
 ```
 
-benchmark 覆盖 scheduler admission、HTML extraction、engine throughput 和 bounded fan-out。CI 只执行 smoke run，不设置依赖具体机器的硬性能阈值。
+Benchmark 覆盖 scheduler admission、HTML extraction、in-memory engine throughput 和 bounded fan-out。CI 只做 smoke run，不设置依赖 runner hardware 的硬阈值。
 
-## Design
+本机参考结果（Apple Silicon，Python 3.14.6，2026-07-22）：
 
-`zerg` 的核心原则：
+| Case | Workload | Mean |
+|---|---:|---:|
+| Engine throughput | 5,000 in-memory requests | ~22.9 ms |
+| Scheduler admission | 10,000 unique requests | ~9.4 ms |
+| Parser extraction | 1,000 cards | ~4.8 ms |
+| Bounded fan-out | 1,000 generated requests, queue 32 | ~1.6 ms |
 
-- async-first
-- bounded concurrency
-- 少量明确的并发参数
-- spider、scheduler、fetcher、pipeline 相互独立
-- 高吞吐热路径保持简单
-- 站点逻辑留在 spider，不进入 framework core
-- 通用能力经过多个场景验证后再进入公共 API
+这些是 deterministic microbenchmarks，不代表真实网络吞吐或性能承诺。
 
-`zerg` 只负责爬虫框架本身。站点 spiders、运行数据、部署策略和业务 schema 属于使用框架的 application。
+## Development
+
+```bash
+uv sync --locked --group dev
+uv run ruff check .
+uv run ruff format --check .
+uv run pytest -q
+uv run pytest benchmarks/ --benchmark-only
+uv build
+```
+
+CI 在 Python 3.12、3.13 和 3.14 上运行测试，并检查 Ruff 与 wheel build。
+
+## Release History
+
+| Version | Notes |
+|---|---|
+| [`v0.2.0`](https://github.com/ifoyoo/zerg/releases/tag/v0.2.0) | Bounded runtime、shared rate limits、structured errors、streaming media 和 CI |
+| [`v0.1.0`](https://github.com/ifoyoo/zerg/releases/tag/v0.1.0) | Retrospective baseline release |
+
+完整变更见 [CHANGELOG.md](CHANGELOG.md)，版本比较见 [`v0.1.0...v0.2.0`](https://github.com/ifoyoo/zerg/compare/v0.1.0...v0.2.0)。
+
+## Design Principles
+
+- async-first，hot path 保持直接
+- concurrency、rate、frontier 和 body memory 分别控制
+- spider、scheduler、fetcher 和 pipeline 边界清晰
+- 通用能力经过多个抓取场景验证后再进入 public API
+- 站点逻辑、业务 schema、运行数据和部署策略留在 application
+
+<p align="center">
+  <strong>Small core. Bounded swarm. Observable results.</strong>
+</p>
