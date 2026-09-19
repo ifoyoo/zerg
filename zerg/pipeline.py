@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import json
 from pathlib import Path
-from typing import Any, Protocol, runtime_checkable
+from typing import Any
 
 import orjson
 
@@ -13,13 +13,6 @@ from zerg.media import MediaPipeline, media  # noqa: F401
 
 _JSONL_BUF_ITEMS = 64
 _JSONL_BUF_BYTES = 64 * 1024
-
-
-@runtime_checkable
-class ItemProcessor(Protocol):
-    async def process_item(
-        self, item: dict[str, Any], spider: Any
-    ) -> dict[str, Any] | None: ...
 
 
 class Pipeline:

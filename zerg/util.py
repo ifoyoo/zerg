@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Callable, Iterator
 from typing import Any
-from urllib.parse import parse_qs, urlencode, urljoin, urlsplit, urlunsplit
+from urllib.parse import urlencode, urljoin
 
 _LINK_RE = re.compile(r'<([^>]+)>\s*;\s*rel="?([^",;]+)"?', re.I)
 
@@ -36,23 +36,6 @@ def paginate(
             yield template(page)
         else:
             yield template.format(page=page)
-
-
-def replace_query(url: str, **params: Any) -> str:
-    """Update or add query params."""
-    parts = urlsplit(url)
-    q = parse_qs(parts.query, keep_blank_values=True)
-    for k, v in params.items():
-        if v is None:
-            q.pop(k, None)
-        else:
-            q[k] = [str(v)]
-    flat: list[tuple[str, str]] = []
-    for k, vals in q.items():
-        for val in vals:
-            flat.append((k, val))
-    query = urlencode(flat)
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, query, parts.fragment))
 
 
 def parse_link_header(value: str | None) -> dict[str, str]:

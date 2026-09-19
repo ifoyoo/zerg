@@ -43,21 +43,6 @@ def extract_go_payload(html: str) -> dict[str, Any] | None:
     return None
 
 
-def merge_set_cookie_header(jar: dict[str, str], headers: dict[str, str]) -> None:
-    """Merge a single Set-Cookie style header value into jar."""
-    for k, v in headers.items():
-        if k.lower() != "set-cookie":
-            continue
-        first = v.split(";", 1)[0].strip()
-        if "=" in first:
-            name, val = first.split("=", 1)
-            jar[name.strip()] = val.strip()
-
-
-def cookie_header(jar: dict[str, str]) -> str:
-    return "; ".join(f"{k}={v}" for k, v in jar.items())
-
-
 def process_jsl_html(
     html: str,
     jar: dict[str, str] | None = None,
