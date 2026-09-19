@@ -7,6 +7,7 @@ dependencies = [
     "httpx[http2]>=0.28",
     "selectolax>=0.3",
     "orjson>=3.10",
+    "fpdf2>=2.8.7",
 ]
 
 [project.optional-dependencies]
