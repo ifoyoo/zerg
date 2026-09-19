@@ -69,9 +69,12 @@ def _retry_after_seconds(value: str | None) -> float | None:
     if not value:
         return None
     text = value.strip()
-    if not text.isdigit():  # also rejects negatives, floats, and HTTP dates
+    if not text.isdigit():  # negative, float, and HTTP-date forms are not ours
         return None
-    return min(float(text), 30.0)
+    try:
+        return min(float(text), 30.0)
+    except ValueError:  # pragma: no cover - isdigit() already excludes this
+        return None
 
 
 async def _backoff(attempt: int, retry_after: str | None = None) -> None:
@@ -343,7 +346,12 @@ class ImpersonateFetch:
                 "Use `async with ImpersonateFetch() as f:` context manager"
             )
 
-        from curl_cffi.requests.errors import RequestException
+        from curl_cffi.requests import errors as curl_errors
+
+        # The base transport error moved name across curl_cffi releases.
+        transport_error: type[BaseException] = (
+            getattr(curl_errors, "RequestsError", None) or curl_errors.RequestException
+        )  # type: ignore[attr-defined]
 
         headers = _merge_headers(self._headers, request)
         headers.setdefault("accept-language", "en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7")
@@ -389,7 +397,7 @@ class ImpersonateFetch:
                 raise
             except asyncio.CancelledError:
                 raise
-            except RequestException as exc:
+            except transport_error as exc:
                 if attempt == last:
                     kind = "timeout" if "timeout" in str(exc).lower() else "network"
                     raise DownloadError(

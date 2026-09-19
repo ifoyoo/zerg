@@ -843,6 +843,7 @@ impersonate = [
 
 [package.dev-dependencies]
 dev = [
+    { name = "curl-cffi" },
     { name = "ipython" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -862,6 +863,7 @@ provides-extras = ["impersonate"]
 
 [package.metadata.requires-dev]
 dev = [
+    { name = "curl-cffi", specifier = ">=0.15.0" },
     { name = "ipython", specifier = ">=9.0" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-asyncio", specifier = ">=0.24" },

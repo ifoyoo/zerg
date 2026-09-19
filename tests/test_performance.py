@@ -317,3 +317,76 @@ async def test_media_removes_partial_oversize_file(tmp_path: Path):
     assert item["files_count"] == 0
     assert not list(tmp_path.rglob("*.part"))
     assert not list(tmp_path.rglob("*.jpg"))
+
+
+@pytest.mark.asyncio
+async def test_impersonate_backend_round_trip(monkeypatch):
+    """The curl_cffi backend maps a session response onto Response."""
+    pytest.importorskip("curl_cffi.requests")
+    from zerg.http import IMPERSONATE_TARGETS, ImpersonateFetch
+
+    class FakeResponse:
+        status_code = 200
+        url = "https://ex.com/x"
+        headers = {"content-type": "text/html; charset=utf-8"}
+        content = b"<html>ok</html>"
+
+    class FakeSession:
+        def __init__(self):
+            self.calls: list[tuple[str, str, dict]] = []
+
+        async def request(self, method, url, **kwargs):
+            self.calls.append((method, url, kwargs))
+            return FakeResponse()
+
+        async def close(self):
+            return None
+
+    fetch = ImpersonateFetch()
+    await fetch.__aenter__()
+    fetch._session = FakeSession()
+    try:
+        response = await fetch.fetch(Request("https://ex.com/x"))
+        session = fetch._session
+    finally:
+        await fetch.__aexit__()
+
+    assert response.status == 200
+    assert response.text == "<html>ok</html>"
+    assert response.bytes_received == len(b"<html>ok</html>")
+    assert fetch.browser in IMPERSONATE_TARGETS
+    headers = session.calls[0][2]["headers"]
+    assert headers["accept-language"].startswith("en-US")
+    assert fetch._session is None  # __aexit__ released it
+
+
+@pytest.mark.asyncio
+async def test_impersonate_backend_maps_transport_errors(monkeypatch):
+    """A curl_cffi transport error becomes a DownloadError, after retries."""
+    curl = pytest.importorskip("curl_cffi.requests")
+    from zerg.http import ImpersonateFetch
+
+    async def no_sleep(*args):
+        return None
+
+    monkeypatch.setattr("zerg.http._backoff", no_sleep)
+
+    class BoomSession:
+        async def request(self, *args, **kwargs):
+            raise curl.RequestsError("connect timeout")
+
+        async def close(self):
+            return None
+
+    fetch = ImpersonateFetch(max_retries=2, impersonate="chrome124")
+    await fetch.__aenter__()
+    fetch._session = BoomSession()
+    try:
+        with pytest.raises(DownloadError) as caught:
+            await fetch.fetch(Request("https://ex.com/x"))
+    finally:
+        await fetch.__aexit__()
+
+    assert caught.value.kind == "timeout"
+    assert caught.value.attempts == 2
+    assert caught.value.retries == 1
