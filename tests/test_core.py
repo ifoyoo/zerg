@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import random
 from pathlib import Path
 
 import pytest
@@ -82,6 +83,87 @@ def test_parser_extract_all():
         {"title": "A", "url": "/a"},
         {"title": "B", "url": "/b"},
     ]
+
+
+def _row_scoped_extract_all(html: str, selector: str, rules: dict) -> list[dict]:
+    """Reference semantics: search every row on its own."""
+    from selectolax.lexbor import LexborHTMLParser
+
+    out = []
+    for row in LexborHTMLParser(html).css(selector):
+        item = {}
+        for key, spec in rules.items():
+            if isinstance(spec, tuple):
+                node = row.css_first(spec[0])
+                item[key] = node.attrs.get(spec[1], None) if node else None
+            else:
+                node = row.css_first(spec)
+                item[key] = node.text(strip=True) if node else ""
+        out.append(item)
+    return out
+
+
+def test_extract_all_matches_row_scoped_semantics():
+    """Batched extraction must equal per-row searching, nesting included."""
+    cases = [
+        (
+            # an inner row is visible to its enclosing row as well
+            "<div class='c'><div class='c'><h2>inner</h2></div></div>"
+            "<div class='c'><h2>t</h2><a href='/1'>1</a><a href='/2'>2</a></div>",
+            "div.c",
+            {
+                "title": "h2",
+                "first": ("a", "href"),
+                "self": "div.c",
+                "none": (".zz", "href"),
+            },
+        ),
+        (
+            "<div class='c'><h2></h2><h2>second</h2></div>"
+            "<div class='c'><p>x</p><h2>t</h2></div>",
+            "div.c",
+            {"title": "h2", "first_child": ":first-child", "has_p": "div:has(p)"},
+        ),
+        (
+            "<div class='wrap'><div class='c'><h2>t</h2></div></div>"
+            "<div class='wrap'><div class='c'><a href='/x'>x</a></div></div>",
+            "div.wrap div.c",
+            {"title": "h2", "url": ("a", "href"), "body": "body"},
+        ),
+    ]
+    for html, selector, rules in cases:
+        assert Parser(html).extract_all(selector, rules) == _row_scoped_extract_all(
+            html, selector, rules
+        )
+
+
+def test_extract_all_matches_row_scoped_semantics_random():
+    """Randomized shapes: nested rows, missing fields, many matches per row."""
+    rng = random.Random(20260919)
+    for _ in range(150):
+        parts = []
+        for index in range(rng.randint(0, 25)):
+            inner = "<div class='c'><h2>inner</h2></div>" if rng.random() < 0.4 else ""
+            title = f"<h2>t{index}</h2>" if rng.random() < 0.8 else ""
+            links = "".join(
+                f"<a href='/{index}/{n}'>l</a>"
+                for n in range(rng.randint(0, 3) if rng.random() < 0.5 else 1)
+            )
+            parts.append(f"<div class='c'>{title}{links}{inner}</div>")
+        html = "<html><body>" + "".join(parts) + "</body></html>"
+        rules: dict = {}
+        for key, spec in (
+            ("title", "h2"),
+            ("self", "div.c"),
+            ("deep", ".c"),
+            ("missing", ".zz"),
+            ("url", ("a", "href")),
+        ):
+            if rng.random() < 0.7:
+                rules[key] = spec
+        assert Parser(html).extract_all("div.c", rules) == _row_scoped_extract_all(
+            html, "div.c", rules
+        )
 
 
 # ── Scheduler ───────────────────────────────────────────────────────
