@@ -1,0 +1,12 @@
+{
+  "rules": {
+    "protocol-stubs": {
+      "disable": ["no-ellipsis-body"]
+    },
+    "audited-non-crypto-hashes": {
+      "disable": [
+        "python.lang.security.insecure-hash-algorithms.insecure-hash-algorithm-sha1"
+      ]
+    }
+  }
+}
