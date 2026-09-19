@@ -445,14 +445,14 @@ uv run pytest benchmarks/ --benchmark-only --benchmark-json benchmark.json
 
 Benchmark 覆盖 scheduler admission、HTML extraction、in-memory engine throughput 和 bounded fan-out。CI 只做 smoke run，不设置依赖 runner hardware 的硬阈值。
 
-本机参考结果（Apple Silicon，Python 3.14.6，2026-07-22）：
+本机参考结果（Apple Silicon，Python 3.14.7，2026-09-19）：
 
-| Case | Workload | Mean |
+| Case | Workload | Min |
 |---|---:|---:|
-| Engine throughput | 5,000 in-memory requests | ~22.9 ms |
-| Scheduler admission | 10,000 unique requests | ~9.4 ms |
-| Parser extraction | 1,000 cards | ~4.8 ms |
-| Bounded fan-out | 1,000 generated requests, queue 32 | ~1.6 ms |
+| Engine throughput | 5,000 in-memory requests | ~18.4 ms |
+| Scheduler admission | 10,000 unique requests | ~7.1 ms |
+| Parser extraction | 1,000 cards | ~3.0 ms |
+| Bounded fan-out | 1,000 generated requests, queue 32 | ~1.24 ms |
 
 这些是 deterministic microbenchmarks，不代表真实网络吞吐或性能承诺。
 

@@ -5,6 +5,30 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Performance
+
+- Card extraction is ~1.5x faster, scheduler admission ~1.35x, engine
+  throughput ~1.2x and bounded fan-out ~1.25x (`benchmarks/`, Python 3.14.7,
+  Apple Silicon). `Parser.extract_all` now plans per rule: one page-wide query
+  when a rule matches about once per row and the rows cover the markup,
+  per-row first-match search otherwise. Results are unchanged, nested rows
+  included.
+- Callback output is streamed without an extra async-generator hop, so a
+  callback may return a single value, an iterable, or an async iterator.
+- Callback names resolve through a per-crawl memo instead of `getattr` per
+  request.
+- Response bodies buffer as a chunk list and join once instead of growing and
+  copying a `bytearray`.
+- Scheduler normalizes allowed domains at construction and enqueues uncontended
+  seeds without awaiting.
+- `Request.fingerprint` skips `urldefrag` for URLs without a fragment, and
+  `_detect_encoding` only scans for `<meta>` charset when a decodable header is
+  absent.
+- `Parser` no longer retains the HTML string it was built from (its length is
+  kept for the extraction planner).
+
 ## [0.2.0] - 2026-07-22
 
 ### Added
