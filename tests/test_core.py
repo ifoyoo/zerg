@@ -449,6 +449,21 @@ async def test_engine_health_threshold_tolerates_strings(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_csv_pipeline_writes_declared_columns(tmp_path: Path):
+    from zerg import csv_pipe
+
+    spider = type("S", (), {"name": "csv", "data_dir": tmp_path})()
+    path = tmp_path / "items.csv"
+    pipe = csv_pipe(["b", "a"], path)
+    await pipe.open(spider)
+    await pipe.process_item({"a": 1, "b": 2, "extra": 3}, spider)
+    await pipe.process_item({"a": 4}, spider)
+    await pipe.close(spider)
+
+    assert path.read_text().splitlines() == ["b,a", "2,1", ",4"]
+
+
+@pytest.mark.asyncio
 async def test_engine_depth_filter(tmp_path: Path):
     home = b'<html><a class="item" href="/p/1">1</a></html>'
     fake = _FakeFetch(

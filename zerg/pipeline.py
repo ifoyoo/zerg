@@ -104,7 +104,7 @@ class JsonlPipeline:
 
     async def process_item(self, item: dict[str, Any], spider: Any) -> dict[str, Any]:
         assert self._file is not None
-        line = orjson.dumps(item) + b"\n"
+        line = orjson.dumps(item, option=orjson.OPT_APPEND_NEWLINE)
         self._buf.extend(line)
         self._n += 1
         if self._n >= self._buf_items or len(self._buf) >= self._buf_bytes:
@@ -139,13 +139,15 @@ class CsvPipeline:
         self._path = path
         new_file = self._mode == "w" or not path.exists() or path.stat().st_size == 0
         self._file = open(path, self._mode, newline="", encoding="utf-8")
-        self._writer = csv.DictWriter(self._file, fieldnames=self.columns)
+        self._writer = csv.writer(self._file)
         if new_file or self._file.tell() == 0:
-            self._writer.writeheader()
+            self._writer.writerow(self.columns)
 
     async def process_item(self, item: dict[str, Any], spider: Any) -> dict[str, Any]:
         assert self._writer is not None
-        self._writer.writerow({k: item.get(k, "") for k in self.columns})
+        # A plain writer with a list row: half the cost of building a dict row
+        # for csv.DictWriter, same output.
+        self._writer.writerow([item.get(column, "") for column in self.columns])
         return item
 
     async def close(self, spider: Any) -> None:
