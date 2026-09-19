@@ -64,11 +64,19 @@ def _merge_headers(
     return headers
 
 
+def _retry_after_seconds(value: str | None) -> float | None:
+    """Seconds from a Retry-After header, capped at 30; None when unusable."""
+    if not value:
+        return None
+    text = value.strip()
+    if not text.isdigit():  # also rejects negatives, floats, and HTTP dates
+        return None
+    return min(float(text), 30.0)
+
+
 async def _backoff(attempt: int, retry_after: str | None = None) -> None:
-    if retry_after and retry_after.isdigit():
-        await asyncio.sleep(min(int(retry_after), 30))
-    else:
-        await asyncio.sleep(2**attempt * 0.5)
+    wait = _retry_after_seconds(retry_after)
+    await asyncio.sleep(wait if wait is not None else 2**attempt * 0.5)
 
 
 def _content_length(headers: Any) -> int | None:

@@ -28,6 +28,7 @@ from zerg.pipeline import Pipeline
 from zerg.rate import RateLimiter
 from zerg.scheduler import Scheduler
 from zerg.spider import Spider
+from zerg.util import as_float, as_int
 
 _MISSING = object()
 
@@ -350,20 +351,21 @@ class Engine:
         stats.queue_rejected = scheduler.rejected
         stats.duration_s = round(time.perf_counter() - t0, 3)
         out = stats.as_dict()
-        req_n = int(out.get("requests") or 0)
-        err_n = int(out.get("errors") or 0)
+        req_n = as_int(out.get("requests"))
+        err_n = as_int(out.get("errors"))
         err_rate = (err_n / req_n) if req_n else 0.0
         out["error_rate"] = round(err_rate, 4)
         threshold = getattr(spider, "health_error_rate", 0.5)
         if threshold is None:
             out["healthy"] = True
         else:
+            limit = as_float(threshold, 0.5)
             out["healthy"] = (
-                err_rate <= float(threshold)
-                and int(out.get("queue_rejected") or 0) == 0
+                err_rate <= limit
+                and as_int(out.get("queue_rejected")) == 0
                 and (
-                    int(out.get("items") or 0) > 0
-                    or int(out.get("challenges") or 0) > 0
+                    as_int(out.get("items")) > 0
+                    or as_int(out.get("challenges")) > 0
                     or req_n == 0
                 )
             )

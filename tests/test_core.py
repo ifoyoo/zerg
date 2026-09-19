@@ -169,6 +169,30 @@ def test_extract_all_matches_row_scoped_semantics_random():
 # ── Scheduler ───────────────────────────────────────────────────────
 
 
+def test_scheduler_depth_meta_tolerates_strings():
+    s = Scheduler(max_depth=1)
+    assert s.push(Request("https://ex.com/a", meta={"depth": "1"}))
+    assert not s.push(Request("https://ex.com/b", meta={"depth": "2"}))
+    assert s.filtered == 1
+    # junk depth is treated as 0 instead of raising
+    assert s.push(Request("https://ex.com/c", meta={"depth": "junk"}))
+
+
+def test_response_depth_tolerates_junk():
+    req = Request("https://ex.com/x", meta={"depth": "3"})
+    resp = Response.from_http(
+        request=req, url="https://ex.com/x", status=200, headers={}, content=b""
+    )
+    assert resp.depth == 3
+    junk = Request("https://ex.com/y", meta={"depth": "nope"})
+    assert (
+        Response.from_http(
+            request=junk, url="https://ex.com/y", status=200, headers={}, content=b""
+        ).depth
+        == 0
+    )
+
+
 def test_scheduler_dedup_domain_depth():
     s = Scheduler(allowed_domains=["ex.com"], max_depth=1)
     assert s.push(Request("https://ex.com/a"))
@@ -190,6 +214,31 @@ def test_scheduler_dedup_domain_depth():
 
 
 # ── Utils ───────────────────────────────────────────────────────────
+
+
+def test_as_int_as_float_coercion():
+    from zerg.util import as_float, as_int
+
+    assert as_int(3) == 3
+    assert as_int("4") == 4
+    assert as_int("junk") == 0
+    assert as_int(None, -1) == -1
+    assert as_float("0.25") == 0.25
+    assert as_float("junk", 0.5) == 0.5
+
+
+def test_retry_after_seconds():
+    from zerg.http import _retry_after_seconds
+
+    assert _retry_after_seconds(None) is None
+    assert _retry_after_seconds("") is None
+    assert _retry_after_seconds("5") == 5.0
+    assert _retry_after_seconds("  7 ") == 7.0
+    assert _retry_after_seconds("9999") == 30.0
+    # negatives, floats, and HTTP-dates fall back to exponential backoff
+    assert _retry_after_seconds("-1") is None
+    assert _retry_after_seconds("1.5") is None
+    assert _retry_after_seconds("Wed, 21 Oct 2015 07:28:00 GMT") is None
 
 
 def test_util_helpers():
@@ -346,6 +395,57 @@ async def test_engine_callback_shapes(tmp_path: Path):
     assert stats["items"] == 2
     assert stats["errors"] == 0
     assert fake.calls == ["https://ex.com/list", "https://ex.com/one"]
+
+
+@pytest.mark.asyncio
+async def test_engine_tolerates_string_depth_from_start(tmp_path: Path):
+    """A str meta["depth"] used to raise out of the seed loop."""
+    fake = _FakeFetch(
+        {
+            "https://ex.com/a": (200, b"<html></html>"),
+            "https://ex.com/b": (200, b"<html></html>"),
+        }
+    )
+
+    class S(Spider):
+        name = "strdepth"
+        concurrency = 1
+        max_depth = 1
+
+        async def start(self):
+            yield Request("https://ex.com/a", meta={"depth": "0"})
+            yield Request("https://ex.com/b", meta={"depth": "1"})
+
+        async def parse(self, response):
+            yield {"url": response.url}
+
+    stats = await crawl(S, fetcher=fake, data_dir=tmp_path)
+    assert stats["requests"] == 2
+    assert stats["items"] == 2
+    assert stats["errors"] == 0
+
+
+@pytest.mark.asyncio
+async def test_engine_health_threshold_tolerates_strings(tmp_path: Path):
+    fake = _FakeFetch({"https://ex.com/": (200, b"<html></html>")})
+
+    class S(Spider):
+        name = "health"
+        start_urls = ["https://ex.com/"]
+        concurrency = 1
+        health_error_rate = "1"
+
+        async def parse(self, response):
+            yield {"ok": True}
+
+    assert (await crawl(S, fetcher=fake, data_dir=tmp_path))["healthy"] is True
+
+    class Junk(S):
+        name = "health_junk"
+        health_error_rate = "nonsense"
+
+    # unparsable threshold falls back to the documented 0.5
+    assert (await crawl(Junk, fetcher=fake, data_dir=tmp_path))["healthy"] is True
 
 
 @pytest.mark.asyncio

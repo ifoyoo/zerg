@@ -10,6 +10,26 @@ from urllib.parse import urlencode, urljoin
 _LINK_RE = re.compile(r'<([^>]+)>\s*;\s*rel="?([^",;]+)"?', re.I)
 
 
+def as_int(value: Any, default: int = 0) -> int:
+    """Best-effort int for spider-supplied values; ``default`` for junk."""
+    if type(value) is int:
+        return value
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def as_float(value: Any, default: float = 0.0) -> float:
+    """Best-effort float for spider-supplied values; ``default`` for junk."""
+    if type(value) is float:
+        return value
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def absolute_url(base: str, href: str | None) -> str:
     if not href:
         return ""

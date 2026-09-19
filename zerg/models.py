@@ -9,6 +9,8 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any, NotRequired, TypedDict
 from urllib.parse import urldefrag, urlencode, urljoin, urlsplit, urlunsplit
 
+from zerg.util import as_int
+
 if TYPE_CHECKING:
     from zerg.parser import Parser
 
@@ -109,6 +111,8 @@ class Request:
         method = self.method.upper()
         key = f"{method}:{url}"
         if self.body and method not in _BODYLESS_METHODS:
+            # sha1 is a dedup key here, not a security primitive, and it is
+            # faster than blake2b once a body passes ~1 KB.
             digest = hashlib.sha1(self.body).hexdigest()[:16]
             key += f":{digest}"
         return key
@@ -178,7 +182,7 @@ class Response:
 
     @property
     def depth(self) -> int:
-        return int(self.request.meta.get("depth", 0))
+        return as_int(self.request.meta.get("depth", 0))
 
     def urljoin(self, href: str | None) -> str:
         """Resolve href against response URL."""

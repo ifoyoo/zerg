@@ -6,6 +6,7 @@ import asyncio
 from urllib.parse import urlsplit
 
 from zerg.models import Request
+from zerg.util import as_int
 
 
 def _host_allowed(host: str, allowed: tuple[tuple[str, str], ...]) -> bool:
@@ -53,7 +54,7 @@ class Scheduler:
         return len(self._seen)
 
     def _admit(self, request: Request) -> str | None:
-        depth = int(request.meta.get("depth", 0))
+        depth = as_int(request.meta.get("depth", 0))
         if self._max_depth is not None and depth > self._max_depth:
             self.filtered += 1
             return None
