@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Spider-supplied values are coerced instead of raising: a `str`
+  `meta["depth"]` or `health_error_rate` used to abort the crawl. Depth and the
+  health threshold now go through new `util.as_int` / `util.as_float` helpers,
+  and `Retry-After` parsing is a digit check with a 30 s cap and an exponential
+  fallback.
+
 ### Performance
 
+- `CsvPipeline` writes through a plain `csv.writer` with a value list instead of
+  building a dict per row (1.14 us -> 0.57 us per row); `JsonlPipeline` lets
+  orjson append the newline.
 - Card extraction is ~1.5x faster, scheduler admission ~1.35x, engine
   throughput ~1.2x and bounded fan-out ~1.25x (`benchmarks/`, Python 3.14.7,
   Apple Silicon). `Parser.extract_all` now plans per rule: one page-wide query
