@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `impersonate` backend imported a curl_cffi error class that no longer
+  exists (`RequestException`; 0.15 renamed it `RequestsError`), so transport
+  errors surfaced as backend failures without a retry classification. The
+  backend has tests now (round trip and error mapping).
 - Spider-supplied values are coerced instead of raising: a `str`
   `meta["depth"]` or `health_error_rate` used to abort the crawl. Depth and the
   health threshold now go through new `util.as_int` / `util.as_float` helpers,
