@@ -66,7 +66,15 @@ core = (
 )
 
 __all__ = [
-    *core,
+    # the `core` members, spelled out so the export list stays statically readable
+    "Request",
+    "Response",
+    "Spider",
+    "crawl",
+    "jsonl",
+    "media",
+    "Fetch",
+    "Failure",
     "crawl_many",
     "discover",
     "get",

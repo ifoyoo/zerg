@@ -17,6 +17,8 @@ import shutil
 import subprocess
 from typing import Any
 
+from zerg.util import as_int
+
 _COOKIE_ASSIGN_RE = re.compile(
     r"document\.cookie\s*=\s*(.*?);\s*location",
     re.I | re.S,
@@ -216,7 +218,7 @@ def _eval_atom(atom: str) -> Any:
         except Exception as e:
             raise ValueError(f"cannot eval atom {atom!r}: {e}") from e
     if re.fullmatch(r"-?\d+", atom):
-        return int(atom)
+        return as_int(atom)
     raise ValueError(f"unsupported JS atom: {atom!r}")
 
 
@@ -238,6 +240,8 @@ def solve_go_clearance(payload: dict[str, Any]) -> tuple[str, str]:
     tn = payload.get("tn") or "__jsl_clearance_s"
 
     def digest(s: str) -> str:
+        # The hash is dictated by the challenge payload's ``ha`` field, not a
+        # choice: sha1/md5 are what the site asks for.
         raw = s.encode()
         if ha == "sha1":
             return hashlib.sha1(raw).hexdigest()

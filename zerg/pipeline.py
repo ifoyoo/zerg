@@ -38,7 +38,7 @@ class Pipeline:
         for p in self._processors:
             process_item = getattr(p, "process_item", None)
             if process_item is not None:
-                result = process_item(item, spider)
+                result: Any = process_item(item, spider)
                 if hasattr(result, "__await__"):
                     result = await result
                 if result is None:

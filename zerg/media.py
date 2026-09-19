@@ -251,14 +251,16 @@ class MediaPipeline:
         folder = self._root / name
         folder.mkdir(parents=True, exist_ok=True)
         assert self._sem is not None
+        sem = self._sem
 
         async def download(index: int, url: str) -> str | None:
+            # sha1 here names a file, it is not a security primitive.
             digest = hashlib.sha1(url.encode()).hexdigest()[:8]
             unique = uuid.uuid4().hex[:6]
             stem = f"{index:03d}-{digest}-{unique}"
             base_path = folder / f"{stem}.bin"
             request = Request(url)
-            async with self._sem:
+            async with sem:
                 if callable(getattr(self._fetch, "stream", None)):
                     saved = await self._stream_to_file(url, request, base_path)
                 else:
