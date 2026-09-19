@@ -317,6 +317,38 @@ async def test_engine_bad_yield(tmp_path: Path):
 
 
 @pytest.mark.asyncio
+async def test_engine_callback_shapes(tmp_path: Path):
+    """Callbacks may return a list, a single Request, or a coroutine."""
+    fake = _FakeFetch(
+        {
+            "https://ex.com/list": (200, b"<html></html>"),
+            "https://ex.com/one": (200, b"<html></html>"),
+        }
+    )
+
+    class S(Spider):
+        name = "shapes"
+        start_urls = ["https://ex.com/list"]
+        concurrency = 1
+        max_depth = 1
+
+        def parse(self, response):  # sync callback returning a list
+            return [
+                {"url": response.url},
+                Request("https://ex.com/one", callback="parse_one"),
+            ]
+
+        async def parse_one(self, response):  # async callback returning a dict
+            return {"url": response.url}
+
+    stats = await crawl(S, fetcher=fake, data_dir=tmp_path)
+    assert stats["requests"] == 2
+    assert stats["items"] == 2
+    assert stats["errors"] == 0
+    assert fake.calls == ["https://ex.com/list", "https://ex.com/one"]
+
+
+@pytest.mark.asyncio
 async def test_engine_depth_filter(tmp_path: Path):
     home = b'<html><a class="item" href="/p/1">1</a></html>'
     fake = _FakeFetch(

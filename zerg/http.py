@@ -94,18 +94,24 @@ async def _read_limited(
             limit=limit,
             received=declared,
         )
-    body = bytearray()
+    body: list[bytes] = []
+    total = 0
     async for chunk in response.aiter_bytes():
-        body.extend(chunk)
-        if limit is not None and len(body) > limit:
+        body.append(chunk)
+        total += len(chunk)
+        if limit is not None and total > limit:
             raise DownloadError(
                 request,
                 kind="response_too_large",
                 attempts=attempts,
                 limit=limit,
-                received=len(body),
+                received=total,
             )
-    return bytes(body)
+    if not body:
+        return b""
+    if len(body) == 1:
+        return body[0]
+    return b"".join(body)
 
 
 class Fetch:

@@ -8,14 +8,14 @@ from urllib.parse import urlsplit
 from zerg.models import Request
 
 
-def _host_allowed(host: str, allowed_domains: list[str]) -> bool:
-    """Host matches allowed domain or its subdomain."""
+def _host_allowed(host: str, allowed: tuple[tuple[str, str], ...]) -> bool:
+    """Host matches an allowed domain or its subdomain.
+
+    ``allowed`` holds pre-normalized ``(domain, .domain)`` pairs.
+    """
     host = host.lower().rstrip(".")
-    for domain in allowed_domains:
-        d = domain.lower().lstrip(".").rstrip(".")
-        if not d:
-            continue
-        if host == d or host.endswith("." + d):
+    for domain, suffix in allowed:
+        if host == domain or host.endswith(suffix):
             return True
     return False
 
@@ -32,7 +32,14 @@ class Scheduler:
     ) -> None:
         self._queue: asyncio.Queue[Request] = asyncio.Queue(maxsize=max(0, max_pending))
         self._seen: set[str] = set()
-        self._allowed_domains = list(allowed_domains or [])
+        self._allowed_domains = tuple(
+            (d, "." + d)
+            for d in (
+                domain.lower().lstrip(".").rstrip(".")
+                for domain in (allowed_domains or [])
+            )
+            if d
+        )
         self._max_depth = max_depth
         self.filtered: int = 0
         self.rejected: int = 0
@@ -96,7 +103,14 @@ class Scheduler:
         if fingerprint is None:
             return False
         try:
-            await self._queue.put(request)
+            # Uncontended enqueue needs no await; only a full frontier waits.
+            self._queue.put_nowait(request)
+        except asyncio.QueueFull:
+            try:
+                await self._queue.put(request)
+            except BaseException:
+                self._rollback(fingerprint)
+                raise
         except BaseException:
             self._rollback(fingerprint)
             raise

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncIterator, Callable, Iterable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from pathlib import Path
 from typing import Any, Protocol, runtime_checkable
 
@@ -29,37 +29,23 @@ from zerg.rate import RateLimiter
 from zerg.scheduler import Scheduler
 from zerg.spider import Spider
 
-
-async def _iterate_results(result: Any) -> AsyncIterator[Any]:
-    """Turn callback output into an async stream."""
-    if result is None:
-        return
-
-    if hasattr(result, "__anext__"):
-        async for item in result:
-            yield item
-        return
-
-    if asyncio.iscoroutine(result):
-        result = await result
-        if result is None:
-            return
-
-    if isinstance(result, (Request, dict)):
-        yield result
-        return
-
-    if isinstance(result, Iterable) and not isinstance(result, (str, bytes, dict)):
-        for item in result:
-            yield item
+_MISSING = object()
 
 
-def _resolve_callback(spider: Spider, cb: Callback) -> Callable[..., Any] | None:
-    """Resolve callback name or callable."""
+def _resolve_callback(
+    spider: Spider, cb: Callback, cache: dict[str, Any] | None = None
+) -> Callable[..., Any] | None:
+    """Resolve callback name or callable, memoizing name lookups per crawl."""
     if callable(cb):
         return cb
     if isinstance(cb, str):
-        return getattr(spider, cb, None)
+        if cache is None:
+            return getattr(spider, cb, None)
+        fn = cache.get(cb, _MISSING)
+        if fn is _MISSING:
+            fn = getattr(spider, cb, None)
+            cache[cb] = fn
+        return fn
     return None
 
 
@@ -109,6 +95,8 @@ class CrawlObserver(Protocol):
 
 
 def _call_observers(observers: Sequence[Any], method: str, *args: Any) -> None:
+    if not observers:
+        return
     for obs in observers:
         fn = getattr(obs, method, None)
         if fn is None:
@@ -170,6 +158,7 @@ class Engine:
         limiter = RateLimiter(rate, spider.burst)
         n_workers = max(1, spider.concurrency)
         challenge_set = set(spider.challenge_statuses or [])
+        callbacks: dict[str, Any] = {}
 
         async def enqueue_seed(req: Request) -> None:
             if await scheduler.enqueue(req):
@@ -179,30 +168,50 @@ class Engine:
             if scheduler.push(req):
                 _call_observers(observers, "on_request", req)
 
+        async def emit(result: Any, source: str) -> None:
+            if isinstance(result, Request):
+                enqueue_child(result)
+            elif isinstance(result, dict):
+                _call_observers(observers, "on_item", result)
+                if await self._pipeline.process(result, spider) is not None:
+                    stats.items += 1
+            else:
+                stats.errors += 1
+                stats.bump(REASON_YIELD)
+                zlog(
+                    spider.name,
+                    "ignore yield type %s from %s",
+                    type(result).__name__,
+                    source,
+                )
+
         async def handle_yields(raw: Any, *, source: str) -> None:
-            async for result in _iterate_results(raw):
-                if isinstance(result, Request):
-                    enqueue_child(result)
-                elif isinstance(result, dict):
-                    _call_observers(observers, "on_item", result)
-                    out = await self._pipeline.process(result, spider)
-                    if out is not None:
-                        stats.items += 1
-                else:
-                    stats.errors += 1
-                    stats.bump(REASON_YIELD)
-                    zlog(
-                        spider.name,
-                        "ignore yield type %s from %s",
-                        type(result).__name__,
-                        source,
-                    )
+            """Feed callback output: single value, iterable, or async iterator."""
+            if raw is None:
+                return
+            if isinstance(raw, (Request, dict)):
+                await emit(raw, source)
+                return
+            if hasattr(raw, "__anext__"):
+                async for result in raw:
+                    await emit(result, source)
+                return
+            if asyncio.iscoroutine(raw):
+                raw = await raw
+                if raw is None:
+                    return
+                if isinstance(raw, (Request, dict)):
+                    await emit(raw, source)
+                    return
+            if isinstance(raw, Iterable) and not isinstance(raw, (str, bytes, dict)):
+                for result in raw:
+                    await emit(result, source)
 
         async def dispatch_failure(failure: Failure) -> None:
             stats.errors += 1
             stats.bump(failure.reason)
             _call_observers(observers, "on_failure", failure)
-            fn = _resolve_callback(spider, failure.request.errback)
+            fn = _resolve_callback(spider, failure.request.errback, callbacks)
             if fn is None:
                 fn = getattr(spider, "errback", None)
             if fn is None:
@@ -269,7 +278,7 @@ class Engine:
                         )
                         return
 
-                callback = _resolve_callback(spider, req.callback)
+                callback = _resolve_callback(spider, req.callback, callbacks)
                 if callback is None:
                     await dispatch_failure(
                         Failure(

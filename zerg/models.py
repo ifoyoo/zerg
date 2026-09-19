@@ -27,6 +27,12 @@ _META_CONTENT_TYPE_RE = re.compile(
     rb'<meta[^>]+content=["\'][^"\']*charset=([a-zA-Z0-9_\-]+)',
     re.IGNORECASE,
 )
+# Encodings that say "whatever" — never trusted as a header candidate.
+_SUSPECT_ENCODINGS = frozenset({"iso-8859-1", "latin-1", "latin1"})
+_META_HEAD_BYTES = 4096
+_SAMPLE_BYTES = 8192
+# Methods whose body never feeds the dedup key.
+_BODYLESS_METHODS = frozenset({"GET", "HEAD"})
 
 Callback = str | Callable[..., Any]
 
@@ -35,32 +41,39 @@ def _detect_encoding(content: bytes, header_encoding: str | None) -> str:
     """Detect charset from header / HTML meta, verified by actually decoding.
 
     Chinese JSONP (e.g. 163 ``cm_guonei.js``) often ships GBK while clients
-    claim utf-8 — prefer a candidate that decodes cleanly.
+    claim utf-8 — prefer a candidate that decodes cleanly. The header decides
+    most responses, so the meta scan only runs when it cannot.
     """
-    candidates: list[str] = []
+    header = ""
     if header_encoding:
         enc = header_encoding.strip().lower()
-        if enc and enc not in {"iso-8859-1", "latin-1", "latin1"}:
-            candidates.append(enc)
-    head = content[:4096]
-    m = _META_CHARSET_RE.search(head) or _META_CONTENT_TYPE_RE.search(head)
-    if m:
-        meta = m.group(1).decode("ascii", errors="ignore").lower()
-        if meta and meta not in candidates:
-            candidates.append(meta)
-    for enc in ("utf-8", "gb18030", "gbk"):
-        if enc not in candidates:
-            candidates.append(enc)
-    sample = content[:8192] if content else b""
-    if not sample:
-        return candidates[0] if candidates else "utf-8"
-    for enc in candidates:
+        if enc and enc not in _SUSPECT_ENCODINGS:
+            header = enc
+    if not content:
+        return header or "utf-8"
+
+    sample = content[:_SAMPLE_BYTES]
+    if header:
         try:
-            sample.decode(enc)
-            return enc
+            sample.decode(header)
+            return header
         except (LookupError, UnicodeDecodeError):
-            continue
-    return candidates[0] if candidates else "utf-8"
+            pass
+
+    head = content[:_META_HEAD_BYTES]
+    match = _META_CHARSET_RE.search(head) or _META_CONTENT_TYPE_RE.search(head)
+    meta = ""
+    if match:
+        meta = match.group(1).decode("ascii", errors="ignore").lower()
+
+    for enc in (meta, "utf-8", "gb18030", "gbk"):
+        if enc and enc != header:
+            try:
+                sample.decode(enc)
+                return enc
+            except (LookupError, UnicodeDecodeError):
+                continue
+    return header or meta or "utf-8"
 
 
 @dataclass(slots=True)
@@ -90,9 +103,12 @@ class Request:
 
     def fingerprint(self) -> str:
         """Dedup key: METHOD:url[:body_sha1]."""
-        url, _ = urldefrag(self.url)
-        key = f"{self.method.upper()}:{url}"
-        if self.body and self.method.upper() not in {"GET", "HEAD"}:
+        url = self.url
+        if "#" in url:
+            url, _ = urldefrag(url)
+        method = self.method.upper()
+        key = f"{method}:{url}"
+        if self.body and method not in _BODYLESS_METHODS:
             digest = hashlib.sha1(self.body).hexdigest()[:16]
             key += f":{digest}"
         return key
